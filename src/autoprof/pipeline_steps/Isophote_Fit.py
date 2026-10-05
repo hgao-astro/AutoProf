@@ -19,6 +19,11 @@ from ..autoprofutils.SharedFunctions import (
     _interpolate_invalid_isophote_samples,
     _validate_interpolate_method,
     _photutils_masked_data,
+    _DEFAULT_ELLIP_MAX,
+    _resolve_ellip_max,
+    _ellip_to_logq,
+    _logq_to_ellip,
+    _perturb_ellip,
     _x_to_pa,
     _x_to_eps,
     _inv_x_to_eps,
@@ -148,7 +153,9 @@ def _active_neighbors(i, active_mask, n):
     return neighbors
 
 
-def _interpolate_inactive_parameters(sample_radii, parameters, active_mask):
+def _interpolate_inactive_parameters(
+    sample_radii, parameters, active_mask, ellip_max=_DEFAULT_ELLIP_MAX
+):
     active_indices = np.flatnonzero(active_mask)
     inactive_indices = np.flatnonzero(np.logical_not(active_mask))
     if len(active_indices) < 2 or len(inactive_indices) == 0:
@@ -159,11 +166,11 @@ def _interpolate_inactive_parameters(sample_radii, parameters, active_mask):
     active_ellip = np.array(list(parameters[i]["ellip"] for i in active_indices))
     pa_s = np.sin(2 * active_pa)
     pa_c = np.cos(2 * active_pa)
-    inv_ellip = _inv_x_to_eps(active_ellip)
+    inv_ellip = _ellip_to_logq(active_ellip, ellip_max)
 
     for i in inactive_indices:
         radius = sample_radii[i]
-        parameters[i]["ellip"] = _x_to_eps(np.interp(radius, active_radii, inv_ellip))
+        parameters[i]["ellip"] = _logq_to_ellip(np.interp(radius, active_radii, inv_ellip), ellip_max)
         parameters[i]["pa"] = _x_to_pa(
             ((np.arctan2(np.interp(radius, active_radii, pa_s), np.interp(radius, active_radii, pa_c))) % (2 * np.pi))
             / 2
@@ -192,8 +199,9 @@ def _activate_inactive_radii(
     max_mode=2,
     interp_method="bilinear",
     rad_interp=None,
+    ellip_max=_DEFAULT_ELLIP_MAX,
 ):
-    _interpolate_inactive_parameters(sample_radii, parameters, active_mask)
+    _interpolate_inactive_parameters(sample_radii, parameters, active_mask, ellip_max)
     activated = []
     for i in np.flatnonzero(np.logical_not(active_mask)):
         if _has_enough_isophote_samples(
@@ -221,6 +229,7 @@ def _activate_inactive_ellipse_radii(
     mask,
     interp_method="bilinear",
     rad_interp=None,
+    ellip_max=_DEFAULT_ELLIP_MAX,
 ):
     active_indices = np.flatnonzero(active_mask)
     inactive_indices = np.flatnonzero(np.logical_not(active_mask))
@@ -230,11 +239,11 @@ def _activate_inactive_ellipse_radii(
     active_radii = sample_radii[active_indices]
     pa_s = np.sin(2 * pa[active_indices])
     pa_c = np.cos(2 * pa[active_indices])
-    inv_ellip = _inv_x_to_eps(ellip[active_indices])
+    inv_ellip = _ellip_to_logq(ellip[active_indices], ellip_max)
     activated = []
     for i in inactive_indices:
         radius = sample_radii[i]
-        ellip[i] = _x_to_eps(np.interp(radius, active_radii, inv_ellip))
+        ellip[i] = _logq_to_ellip(np.interp(radius, active_radii, inv_ellip), ellip_max)
         pa[i] = _x_to_pa(
             ((np.arctan2(np.interp(radius, active_radii, pa_s), np.interp(radius, active_radii, pa_c))) % (2 * np.pi))
             / 2
@@ -267,6 +276,7 @@ def _determine_sample_radii(
     interp_method="bilinear",
     rad_interp=None,
 ):
+    ellip_max = _resolve_ellip_max(options)
     shrink = 0
     while shrink < 5:
         sample_radii = []
@@ -280,7 +290,7 @@ def _determine_sample_radii(
                 _iso_extract_with_interp_cutoff(
                     dat,
                     radius,
-                    {"ellip": results["init ellip"], "pa": results["init pa"]},
+                    {"ellip": np.clip(results["init ellip"], 0.0, ellip_max), "pa": results["init pa"]},
                     results["center"],
                     more=False,
                     mask=mask,
@@ -388,6 +398,10 @@ def Isophote_Fit_FixedPhase(IMG, results, options):
 
     Parameters
     -----------------
+    ap_iso_ellip_max : float, default 0.95
+      Maximum ellipticity (1 - b/a), strictly between 0 and 1.
+      Shared by native initialization, fitting, uncertainties, and interpolation.
+
     ap_scale : float, default 0.2
       growth scale when fitting isophotes, not the same as
       *ap_sample---scale*.
@@ -432,6 +446,7 @@ def Isophote_Fit_FixedPhase(IMG, results, options):
 
     """
 
+    ellip_max = _resolve_ellip_max(options)
     if "ap_scale" in options:
         scale = options["ap_scale"]
     else:
@@ -466,7 +481,7 @@ def Isophote_Fit_FixedPhase(IMG, results, options):
         interp_method=interp_method,
         rad_interp=rad_interp,
     )
-    ellip = np.ones(len(sample_radii)) * results["init ellip"]
+    ellip = np.full(len(sample_radii), np.clip(results["init ellip"], 0.0, ellip_max))
     pa = np.ones(len(sample_radii)) * results["init pa"]
     logging.debug("%s: sample radii: %s" % (options["ap_name"], str(sample_radii)))
 
@@ -485,10 +500,10 @@ def Isophote_Fit_FixedPhase(IMG, results, options):
     return IMG, res
 
 
-def _ellip_smooth(R, E, deg):
+def _ellip_smooth(R, E, deg, ellip_max=_DEFAULT_ELLIP_MAX):
     model = make_pipeline(PolynomialFeatures(deg), HuberRegressor(epsilon=2.0))
     model.fit(np.log10(R).reshape(-1, 1), _inv_x_to_eps(E))
-    return _x_to_eps(model.predict(np.log10(R).reshape(-1, 1)))
+    return np.clip(_x_to_eps(model.predict(np.log10(R).reshape(-1, 1))), 0.0, ellip_max)
 
 
 def _pa_smooth(R, PA, deg):
@@ -595,8 +610,10 @@ def _FFT_Robust_Errors(
     name="",
     interp_method="bilinear",
     rad_interp=None,
+    ellip_max=_DEFAULT_ELLIP_MAX,
 ):
 
+    PARAMS = [dict(p, ellip=np.clip(p["ellip"], 0.0, ellip_max)) for p in PARAMS]
     PA_err = np.zeros(len(R))
     E_err = np.zeros(len(R))
     for ri in range(len(R)):
@@ -648,7 +665,7 @@ def _FFT_Robust_Errors(
                     finite_loss,
                     x0=x0,
                     method="SLSQP",
-                    bounds=[(0, 0.999), (0, np.pi)],
+                    bounds=[(0, ellip_max), (0, np.pi)],
                     options={"ftol": 0.001},
                 )
             except Exception:
@@ -700,6 +717,10 @@ def Isophote_Fit_FFT_Robust(IMG, results, options):
 
     Parameters
     -----------------
+    ap_iso_ellip_max : float, default 0.95
+      Maximum ellipticity (1 - b/a), strictly between 0 and 1.
+      Shared by native initialization, fitting, uncertainties, and interpolation.
+
     ap_scale : float, default 0.2
       growth scale when fitting isophotes, not the same as
       *ap_sample---scale*.
@@ -818,6 +839,7 @@ def Isophote_Fit_FFT_Robust(IMG, results, options):
 
     """
 
+    ellip_max = _resolve_ellip_max(options)
     if "ap_scale" in options:
         scale = options["ap_scale"]
     else:
@@ -860,12 +882,13 @@ def Isophote_Fit_FFT_Robust(IMG, results, options):
         interp_method=interp_method,
         rad_interp=rad_interp,
     )
-    ellip = np.ones(len(sample_radii)) * results["init ellip"]
+    ellip = np.full(len(sample_radii), np.clip(results["init ellip"], 0.0, ellip_max))
     pa = np.ones(len(sample_radii)) * results["init pa"]
     logging.debug("%s: sample radii: %s" % (options["ap_name"], str(sample_radii)))
     # Fit isophotes
     ######################################################################
     perturb_scale = 0.03
+    # The log-q factor 2/pi preserves the previous local ellip step at ellip=0.5.
     regularize_scale = options["ap_regularize_scale"] if "ap_regularize_scale" in options else 1.0
     robust_clip = options["ap_isofit_robustclip"] if "ap_isofit_robustclip" in options else 0.15
     N_perturb = 5
@@ -953,9 +976,10 @@ def Isophote_Fit_FFT_Robust(IMG, results, options):
             for n in range(N_perturb):
                 perturbations.append(deepcopy(parameters))
                 if count % param_cycle == 0:
-                    perturbations[-1][i]["ellip"] = _x_to_eps(
-                        _inv_x_to_eps(perturbations[-1][i]["ellip"])
-                        + np.random.normal(loc=0, scale=perturb_scale)
+                    perturbations[-1][i]["ellip"] = _perturb_ellip(
+                        perturbations[-1][i]["ellip"],
+                        np.random.normal(loc=0, scale=perturb_scale * 2 / np.pi),
+                        ellip_max,
                     )
                 elif count % param_cycle == 1:
                     perturbations[-1][i]["pa"] = (
@@ -1027,6 +1051,7 @@ def Isophote_Fit_FFT_Robust(IMG, results, options):
                     max_mode=_max_fit_mode(fit_coefs),
                     interp_method=interp_method,
                     rad_interp=rad_interp,
+                    ellip_max=ellip_max,
                 )
                 if len(activated) > 0:
                     count_nochange = 0
@@ -1171,6 +1196,7 @@ def Isophote_Fit_FFT_Robust(IMG, results, options):
         name=options["ap_name"],
         interp_method=interp_method,
         rad_interp=rad_interp,
+        ellip_max=ellip_max,
     )
     for i in range(len(parameters)):
         parameters[i]["ellip err"] = ellip_err[i]
@@ -1342,6 +1368,10 @@ def Isophote_Fit_FFT_mean(IMG, results, options):
 
     Parameters
     -----------------
+    ap_iso_ellip_max : float, default 0.95
+      Maximum ellipticity (1 - b/a), strictly between 0 and 1.
+      Shared by native initialization, fitting, uncertainties, and interpolation.
+
     ap_scale : float, default 0.2
       growth scale when fitting isophotes, not the same as
       *ap_sample---scale*.
@@ -1389,6 +1419,7 @@ def Isophote_Fit_FFT_mean(IMG, results, options):
 
     """
 
+    ellip_max = _resolve_ellip_max(options)
     if "ap_scale" in options:
         scale = options["ap_scale"]
     else:
@@ -1424,7 +1455,7 @@ def Isophote_Fit_FFT_mean(IMG, results, options):
         interp_method=interp_method,
         rad_interp=rad_interp,
     )
-    ellip = np.ones(len(sample_radii)) * results["init ellip"]
+    ellip = np.full(len(sample_radii), np.clip(results["init ellip"], 0.0, ellip_max))
     pa = np.ones(len(sample_radii)) * results["init pa"]
     logging.debug("%s: sample radii: %s" % (options["ap_name"], str(sample_radii)))
 
@@ -1489,9 +1520,10 @@ def Isophote_Fit_FFT_mean(IMG, results, options):
             for n in range(N_perturb):
                 perturbations.append({"ellip": copy(ellip), "pa": copy(pa)})
                 if count % 3 in [0, 1]:
-                    perturbations[-1]["ellip"][i] = _x_to_eps(
-                        _inv_x_to_eps(perturbations[-1]["ellip"][i])
-                        + np.random.normal(loc=0, scale=perturb_scale[0])
+                    perturbations[-1]["ellip"][i] = _perturb_ellip(
+                        perturbations[-1]["ellip"][i],
+                        np.random.normal(loc=0, scale=perturb_scale[0] * 2 / np.pi),
+                        ellip_max,
                     )
                 if count % 3 in [1, 2]:
                     perturbations[-1]["pa"][i] = (
@@ -1536,6 +1568,7 @@ def Isophote_Fit_FFT_mean(IMG, results, options):
                     mask,
                     interp_method=interp_method,
                     rad_interp=rad_interp,
+                    ellip_max=ellip_max,
                 )
                 if len(activated) > 0:
                     count_nochange = 0
@@ -1575,7 +1608,7 @@ def Isophote_Fit_FFT_mean(IMG, results, options):
     smooth_ellip = copy(ellip)
     smooth_pa = copy(pa)
     ellip[:3] = min(ellip[:3])
-    smooth_ellip = _ellip_smooth(sample_radii, smooth_ellip, 5)
+    smooth_ellip = _ellip_smooth(sample_radii, smooth_ellip, 5, ellip_max)
     smooth_pa = _pa_smooth(sample_radii, smooth_pa, 5)
 
     if "ap_doplot" in options and options["ap_doplot"]:
@@ -1617,7 +1650,7 @@ def Isophote_Fit_FFT_mean(IMG, results, options):
 
         plt.scatter(sample_radii, ellip, color="r", label="ellip")
         plt.scatter(sample_radii, pa / np.pi, color="b", label="pa/$np.pi$")
-        show_ellip = _ellip_smooth(sample_radii, ellip, deg=5)
+        show_ellip = _ellip_smooth(sample_radii, ellip, deg=5, ellip_max=ellip_max)
         show_pa = _pa_smooth(sample_radii, pa, deg=5)
         plt.plot(
             sample_radii,

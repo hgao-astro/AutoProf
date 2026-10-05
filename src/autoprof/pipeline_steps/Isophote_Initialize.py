@@ -11,10 +11,12 @@ from ..autoprofutils.SharedFunctions import (
     _has_enough_isophote_coverage,
     _interpolate_invalid_isophote_samples,
     _validate_interpolate_method,
-    _x_to_eps,
+    _DEFAULT_ELLIP_MAX,
+    _resolve_ellip_max,
+    _ellip_to_logq,
+    _perturb_ellip,
     _x_to_pa,
     _inv_x_to_pa,
-    _inv_x_to_eps,
     LSBImage,
     Angle_Average,
     Angle_Median,
@@ -48,6 +50,16 @@ def _finite_average(values):
     if len(finite_values) == 0:
         return np.inf
     return np.mean(finite_values)
+
+
+def _ellip_initial_simplex(ellip, ellip_max=_DEFAULT_ELLIP_MAX):
+    # Optimize log-q offsets and reflect trials; clipped Nelder-Mead vertices
+    # can coincide at a bound. Start with a distinct vertex toward the interior.
+    logq_max = -np.log1p(-ellip_max)
+    step = min(1 / 15, logq_max / 2)
+    if _ellip_to_logq(ellip, ellip_max) >= logq_max / 2:
+        step = -step
+    return [[0.0], [step]]
 
 
 def _init_radius_candidates(radius, max_radius):
@@ -243,6 +255,10 @@ def Isophote_Initialize(IMG, results, options):
 
     Parameters
     -----------------
+    ap_iso_ellip_max : float, default 0.95
+      Maximum ellipticity (1 - b/a), strictly between 0 and 1.
+      Shared by native initialization, fitting, uncertainties, and interpolation.
+
     ap_fit_limit : float, default 2
       noise level out to which to extend the fit in units of pixel background noise level. Default is 2, smaller values will end fitting further out in the galaxy image.
 
@@ -251,6 +267,7 @@ def Isophote_Initialize(IMG, results, options):
 
     ap_isoinit_ellip_set : float, default None
       User set initial ellipticity (1 - b/a), will override the calculation.
+      Clipped to [0, ap_iso_ellip_max].
 
     ap_isoinit_R_set : float, default None
         User set initial semi-major axis length, will override the calculation.
@@ -288,6 +305,7 @@ def Isophote_Initialize(IMG, results, options):
     # Initial attempt to find size of galaxy in image
     # based on when isophotes SB values start to get
     # close to the background noise level
+    ellip_max = _resolve_ellip_max(options)
     circ_ellipse_radii = [1.0]
     allphase = []
     dat = IMG - results["background"]
@@ -368,7 +386,7 @@ def Isophote_Initialize(IMG, results, options):
         phase = PA_shift_convention(options["ap_isoinit_pa_set"] * np.pi / 180)
 
     # Find global ellipticity
-    test_ellip = np.linspace(0.05, 0.95, 15)
+    test_ellip = np.linspace(min(0.05, ellip_max / 2), ellip_max, 15)
     init_radius, test_f2 = _select_init_radius(
         test_ellip,
         lambda e, d, r, p, c, n, m: _fitEllip_loss(
@@ -386,7 +404,7 @@ def Isophote_Initialize(IMG, results, options):
         raise ValueError("Could not initialize isophotes: no finite ellipticity samples found.")
     # Find global ellipticity: second pass
     ellip = test_ellip[np.argmin(test_f2)]
-    test_ellip = np.linspace(ellip - 0.05, ellip + 0.05, 15)
+    test_ellip = np.linspace(max(0.0, ellip - 0.05), min(ellip_max, ellip + 0.05), 15)
     init_radius, test_f2 = _select_init_radius(
         test_ellip,
         lambda e, d, r, p, c, n, m: _fitEllip_loss(
@@ -406,7 +424,7 @@ def Isophote_Initialize(IMG, results, options):
     res = minimize(
         lambda e, d, r, p, c, n, msk: _finite_average(
                 _fitEllip_loss(
-                    _x_to_eps(e[0]),
+                    _perturb_ellip(ellip, e[0], ellip_max),
                     d,
                     r * m,
                     p,
@@ -418,7 +436,7 @@ def Isophote_Initialize(IMG, results, options):
                 )
                 for m in np.linspace(0.8, 1.2, 5)
         ),
-        x0=_inv_x_to_eps(ellip),
+        x0=0.0,
         args=(
             dat,
             init_radius,
@@ -428,21 +446,21 @@ def Isophote_Initialize(IMG, results, options):
             mask,
         ),
         method="Nelder-Mead",
-        options={
-            "initial_simplex": [
-                [_inv_x_to_eps(ellip) - 1 / 15],
-                [_inv_x_to_eps(ellip) + 1 / 15],
-            ]
-        },
+        options={"initial_simplex": _ellip_initial_simplex(ellip, ellip_max)},
     )
     if res.success and np.isfinite(res.fun):
         logging.debug(
             "%s: using optimal ellipticity %.3f over grid ellipticity %.3f"
-            % (options["ap_name"], _x_to_eps(res.x[0]), ellip)
+            % (options["ap_name"], _perturb_ellip(ellip, res.x[0], ellip_max), ellip)
         )
-        ellip = _x_to_eps(res.x[0])
+        ellip = _perturb_ellip(ellip, res.x[0], ellip_max)
     if "ap_isoinit_ellip_set" in options:
-        ellip = options["ap_isoinit_ellip_set"]
+        ellip = float(np.clip(options["ap_isoinit_ellip_set"], 0.0, ellip_max))
+        if ellip != options["ap_isoinit_ellip_set"]:
+            logging.warning(
+                "%s: clipped initial ellipticity to [0, %.2f]",
+                options["ap_name"], ellip_max,
+            )
 
     # Compute the error on the parameters
     ######################################################################
@@ -479,7 +497,7 @@ def Isophote_Initialize(IMG, results, options):
     res_multi = [
         minimize(
             lambda e, d, r, p, c, n, m: _fitEllip_loss(
-                _x_to_eps(e[0]),
+                _perturb_ellip(ellip, e[0], ellip_max),
                 d,
                 r,
                 p,
@@ -489,7 +507,7 @@ def Isophote_Initialize(IMG, results, options):
                 interp_method=interp_method,
                 rad_interp=rad_interp,
             ),
-            x0=_inv_x_to_eps(ellip),
+            x0=0.0,
             args=(
                 dat,
                 rrp[0],
@@ -499,17 +517,12 @@ def Isophote_Initialize(IMG, results, options):
                 mask,
             ),
             method="Nelder-Mead",
-            options={
-                "initial_simplex": [
-                    [_inv_x_to_eps(ellip) - 1 / 15],
-                    [_inv_x_to_eps(ellip) + 1 / 15],
-                ]
-            },
+            options={"initial_simplex": _ellip_initial_simplex(ellip, ellip_max)},
         )
         for rrp in zip(err_radii, sample_pas)
     ]
     ellip_samples = [
-        _x_to_eps(rm.x[0])
+        _perturb_ellip(ellip, rm.x[0], ellip_max)
         for rm in res_multi
         if rm.success and np.isfinite(rm.fun) and np.all(np.isfinite(rm.x))
     ]
@@ -580,6 +593,10 @@ def Isophote_Initialize_mean(IMG, results, options):
 
     Parameters
     -----------------
+    ap_iso_ellip_max : float, default 0.95
+      Maximum ellipticity (1 - b/a), strictly between 0 and 1.
+      Shared by native initialization, fitting, uncertainties, and interpolation.
+
     ap_fit_limit : float, default 2
       noise level out to which to extend the fit in units of pixel
       background noise level. Default is 2, smaller values will end
@@ -618,6 +635,7 @@ def Isophote_Initialize_mean(IMG, results, options):
     # Initial attempt to find size of galaxy in image
     # based on when isophotes SB values start to get
     # close to the background noise level
+    ellip_max = _resolve_ellip_max(options)
     circ_ellipse_radii = [results["psf fwhm"]]
     allphase = []
     dat = IMG - results["background"]
@@ -664,7 +682,7 @@ def Isophote_Initialize_mean(IMG, results, options):
     ) % np.pi  # (-np.angle(np.mean(allphase[-5:]))/2) % np.pi
 
     # Find global ellipticity
-    test_ellip = np.linspace(0.05, 0.95, 15)
+    test_ellip = np.linspace(min(0.05, ellip_max / 2), ellip_max, 15)
     init_radius, test_f2 = _select_init_radius(
         test_ellip,
         lambda e, d, r, p, c, n, m: _fitEllip_mean_loss(
@@ -682,7 +700,7 @@ def Isophote_Initialize_mean(IMG, results, options):
         raise ValueError("Could not initialize isophotes: no finite ellipticity samples found.")
     # Find global ellipticity: second pass
     ellip = test_ellip[np.argmin(test_f2)]
-    test_ellip = np.linspace(ellip - 0.05, ellip + 0.05, 15)
+    test_ellip = np.linspace(max(0.0, ellip - 0.05), min(ellip_max, ellip + 0.05), 15)
     init_radius, test_f2 = _select_init_radius(
         test_ellip,
         lambda e, d, r, p, c, n, m: _fitEllip_mean_loss(
@@ -702,7 +720,7 @@ def Isophote_Initialize_mean(IMG, results, options):
     res = minimize(
         lambda e, d, r, p, c, n, msk: _finite_average(
                 _fitEllip_mean_loss(
-                    _x_to_eps(e[0]),
+                    _perturb_ellip(ellip, e[0], ellip_max),
                     d,
                     r * m,
                     p,
@@ -714,7 +732,7 @@ def Isophote_Initialize_mean(IMG, results, options):
                 )
                 for m in np.linspace(0.8, 1.2, 5)
         ),
-        x0=_inv_x_to_eps(ellip),
+        x0=0.0,
         args=(
             dat,
             init_radius,
@@ -724,19 +742,14 @@ def Isophote_Initialize_mean(IMG, results, options):
             mask,
         ),
         method="Nelder-Mead",
-        options={
-            "initial_simplex": [
-                [_inv_x_to_eps(ellip) - 1 / 15],
-                [_inv_x_to_eps(ellip) + 1 / 15],
-            ]
-        },
+        options={"initial_simplex": _ellip_initial_simplex(ellip, ellip_max)},
     )
     if res.success and np.isfinite(res.fun):
         logging.debug(
             "%s: using optimal ellipticity %.3f over grid ellipticity %.3f"
-            % (options["ap_name"], _x_to_eps(res.x[0]), ellip)
+            % (options["ap_name"], _perturb_ellip(ellip, res.x[0], ellip_max), ellip)
         )
-        ellip = _x_to_eps(res.x[0])
+        ellip = _perturb_ellip(ellip, res.x[0], ellip_max)
 
     # Compute the error on the parameters
     ######################################################################
@@ -771,7 +784,7 @@ def Isophote_Initialize_mean(IMG, results, options):
     res_multi = [
         minimize(
             lambda e, d, r, p, c, n, m: _fitEllip_mean_loss(
-                _x_to_eps(e[0]),
+                _perturb_ellip(ellip, e[0], ellip_max),
                 d,
                 r,
                 p,
@@ -781,20 +794,15 @@ def Isophote_Initialize_mean(IMG, results, options):
                 interp_method=interp_method,
                 rad_interp=rad_interp,
             ),
-            x0=_inv_x_to_eps(ellip),
+            x0=0.0,
             args=(dat, rrp[0], rrp[1], results["center"], results["background noise"], mask),
             method="Nelder-Mead",
-            options={
-                "initial_simplex": [
-                    [_inv_x_to_eps(ellip) - 1 / 15],
-                    [_inv_x_to_eps(ellip) + 1 / 15],
-                ]
-            },
+            options={"initial_simplex": _ellip_initial_simplex(ellip, ellip_max)},
         )
         for rrp in zip(err_radii, sample_pas)
     ]
     ellip_samples = [
-        _x_to_eps(rm.x[0])
+        _perturb_ellip(ellip, rm.x[0], ellip_max)
         for rm in res_multi
         if rm.success and np.isfinite(rm.fun) and np.all(np.isfinite(rm.x))
     ]

@@ -17,8 +17,9 @@ import os
 
 from ..autoprofutils.SharedFunctions import (
     _x_to_pa,
-    _x_to_eps,
-    _inv_x_to_eps,
+    _logq_to_ellip,
+    _ellip_to_logq,
+    _resolve_ellip_max,
     _inv_x_to_pa,
     SBprof_to_COG_errorprop,
     _iso_extract,
@@ -845,6 +846,10 @@ def Isophote_Extract(IMG, results, options):
 
     Parameters
     -----------------
+    ap_iso_ellip_max : float, default 0.95
+      Maximum ellipticity (1 - b/a), strictly between 0 and 1.
+      Shared by native initialization, fitting, uncertainties, and interpolation.
+
     ap_zeropoint : float, default 22.5
       Photometric zero point. For converting flux to mag units.
 
@@ -1014,6 +1019,7 @@ def Isophote_Extract(IMG, results, options):
         }
 
     """
+    ellip_max = _resolve_ellip_max(options)
     use_center = results["center"]
 
     # Radius values to evaluate isophotes
@@ -1084,8 +1090,11 @@ def Isophote_Extract(IMG, results, options):
     # Interpolate profile values, when extrapolating just take last point
     tmp_pa_s = UnivariateSpline(results["fit R"], np.sin(2 * results["fit pa"]), ext=3, s=0)(R)
     tmp_pa_c = UnivariateSpline(results["fit R"], np.cos(2 * results["fit pa"]), ext=3, s=0)(R)
-    E = _x_to_eps(
-        UnivariateSpline(results["fit R"], _inv_x_to_eps(results["fit ellip"]), ext=3, s=0)(R)
+    E = _logq_to_ellip(
+        UnivariateSpline(
+            results["fit R"], _ellip_to_logq(results["fit ellip"], ellip_max), ext=3, s=0
+        )(R),
+        ellip_max,
     )
     # np.arctan(tmp_pa_s / tmp_pa_c) + (np.pi * (tmp_pa_c < 0))
     PA = _x_to_pa(((np.arctan2(tmp_pa_s, tmp_pa_c)) % (2 * np.pi)) / 2)

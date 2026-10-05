@@ -251,6 +251,30 @@ ap_isoextract_interpolate_method (string, default 'bilinear')
 Select method for flux interpolation on image, options are
 'lanczos', 'bicubic', and 'bilinear'. Default is 'bilinear'.
 
+ap_iso_ellip_max (float, default 0.95)
+----------------------------------------------------------------------
+
+**Referencing Methods**
+
+- :func:`~autoprof.pipeline_steps.Isophote_Initialize.Isophote_Initialize`
+- :func:`~autoprof.pipeline_steps.Isophote_Initialize.Isophote_Initialize_mean`
+- :func:`~autoprof.pipeline_steps.Isophote_Fit.Isophote_Fit_FFT_Robust`
+- :func:`~autoprof.pipeline_steps.Isophote_Fit.Isophote_Fit_FFT_mean`
+- :func:`~autoprof.pipeline_steps.Isophote_Fit.Isophote_Fit_FixedPhase`
+- :func:`~autoprof.pipeline_steps.Isophote_Extract.Isophote_Extract`
+
+**Description**
+
+Maximum fitted ellipticity (1 - b/a), strictly between 0 and 1. The default
+0.95 corresponds to a minimum axis ratio b/a of 0.05. For example, set
+``ap_iso_ellip_max = 0.98`` to allow axis ratios down to 0.02.
+
+The native initializers, FFT fitters, fixed-phase fitter, fitted-geometry
+uncertainty searches, and fitted-profile interpolation use [0, ap_iso_ellip_max].
+Initial ellipticities outside this interval are clipped. Ellipticity proposals
+are reflected steps in -ln(b/a) at both bounds. This option does not constrain
+the separate Photutils fitters or geometry read by forced-profile methods.
+
 ap_iso_interpolate_start (float, default 5)
 ----------------------------------------------------------------------
 
@@ -631,6 +655,8 @@ ap_isoinit_ellip_set (float, default None)
 **Description**
 
 User set initial ellipticity (1 - b/a), will override the calculation.
+Clipped to [0, ap_iso_ellip_max]; see *ap_iso_ellip_max* for the common bound used
+throughout native fitting and fitted-profile interpolation.
 
 ap_isoinit_interpolate_method (string, default 'bilinear')
 ----------------------------------------------------------------------

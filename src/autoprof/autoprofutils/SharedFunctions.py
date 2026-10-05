@@ -1373,6 +1373,35 @@ def PA_shift_convention(pa, deg=False):
     return (pa - (shift / 2)) % shift
 
 
+_DEFAULT_ELLIP_MAX = 0.95  # Default minimum fitted axis ratio b/a = 0.05.
+
+
+def _resolve_ellip_max(options):
+    """Resolve the common ellipticity limit for the native isophote pipeline."""
+    ellip_max = float(options.get("ap_iso_ellip_max", _DEFAULT_ELLIP_MAX))
+    if not 0.0 < ellip_max < 1.0:
+        raise ValueError("ap_iso_ellip_max must be finite and strictly between 0 and 1")
+    return ellip_max
+
+
+def _ellip_to_logq(ellip, ellip_max=_DEFAULT_ELLIP_MAX):
+    """Return -ln(1 - ellip), clipping before the log so ellip=1 is finite."""
+    return -np.log1p(-np.clip(ellip, 0.0, ellip_max))
+
+
+def _logq_to_ellip(logq, ellip_max=_DEFAULT_ELLIP_MAX):
+    """Convert -ln(b/a) to bounded ellipticity, including spline overshoots."""
+    logq_max = -np.log1p(-ellip_max)
+    return np.clip(-np.expm1(-np.clip(logq, 0.0, logq_max)), 0.0, ellip_max)
+
+
+def _perturb_ellip(ellip, delta, ellip_max=_DEFAULT_ELLIP_MAX):
+    """Apply a log-axis-ratio step, reflecting at both ellipticity bounds."""
+    logq_max = -np.log1p(-ellip_max)
+    trial = (_ellip_to_logq(ellip, ellip_max) + delta) % (2 * logq_max)
+    return _logq_to_ellip(logq_max - np.abs(trial - logq_max), ellip_max)
+
+
 def _x_to_eps(x):
     """
     Internal, function to map the reals to the range (0.0,1.0)
