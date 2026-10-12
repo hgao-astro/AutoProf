@@ -271,8 +271,9 @@ Maximum fitted ellipticity (1 - b/a), strictly between 0 and 1. The default
 
 The native initializers, FFT fitters, fixed-phase fitter, fitted-geometry
 uncertainty searches, and fitted-profile interpolation use [0, ap_iso_ellip_max].
-Initial ellipticities outside this interval are clipped. Ellipticity proposals
-are reflected steps in -ln(b/a) at both bounds. This option does not constrain
+Initial ellipticities outside this interval are clipped. Joint ellipticity/PA proposals
+perturb the components of -ln(b/a) exp(2j PA), reflecting the magnitude
+at the upper bound. This option does not constrain
 the separate Photutils fitters or geometry read by forced-profile methods.
 
 ap_iso_interpolate_start (float, default 5)
@@ -585,10 +586,11 @@ ap_isofit_perturbscale_ellip (float, default 0.03)
 
 **Description**
 
-Sampling scale for random adjustments to ellipticity made while
-optimizing isophotes. Smaller values will converge faster, but
-get stuck in local minima; larger values will escape local
-minima, but takes longer to converge.
+This legacy documented option is not read by the native FFT fitters.
+Joint ellipticity/PA proposals use a fixed standard deviation of
+0.03 in each log-q shape component. Away from circularity and the bounds,
+this gives approximately 3 percent standard deviation in fractional axis-ratio
+changes, rather than a fixed percentage change in ellipticity.
 
 ap_isofit_perturbscale_pa (float, default 0.06)
 ----------------------------------------------------------------------
@@ -599,10 +601,9 @@ ap_isofit_perturbscale_pa (float, default 0.06)
 
 **Description**
 
-Sampling scale for random adjustments to position angle made
-while optimizing isophotes. Smaller values will converge faster,
-but get stuck in local minima; larger values will escape local
-minima, but takes longer to converge.
+This legacy documented option is not read by the native FFT fitters.
+Joint ellipticity/PA proposals use a fixed standard deviation of
+0.03 in each log-q shape component.
 
 ap_isofit_robustclip (float, default 0.15)
 ----------------------------------------------------------------------
@@ -843,9 +844,18 @@ ap_regularize_scale (float, default 1)
 
 **Description**
 
-scale factor to apply to regularization coupling factor between
-isophotes.  Default of 1, larger values make smoother fits,
-smaller values give more chaotic fits.
+Scale of the shape regularization between neighbouring fitted ellipses.
+For q = b/a and PA in radians, define z = -ln(q) exp(2j PA). The ellipse
+penalty is abs(z_i - z_j), divided by the separation in fit-radius indices.
+It is symmetric and invariant under a common rotation. A circular isophote
+has z=0, so its PA does not contribute to the penalty.
+
+The default is 1; larger values favour smoother shapes. This changes the
+relative weighting from the previous separate ellipticity and PA penalties,
+so previously tuned values may need adjustment. The multiplicative loss
+form is unchanged. Superellipse and Fourier-mode fits retain their previous
+regularization: a round base ellipse can still have a meaningful orientation
+when these distortions are present.
 
 ap_sampleendR (float, default None)
 ----------------------------------------------------------------------

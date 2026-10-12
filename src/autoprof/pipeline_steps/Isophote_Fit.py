@@ -23,7 +23,8 @@ from ..autoprofutils.SharedFunctions import (
     _resolve_ellip_max,
     _ellip_to_logq,
     _logq_to_ellip,
-    _perturb_ellip,
+    _ellipse_shape,
+    _perturb_ellipse,
     _x_to_pa,
     _x_to_eps,
     _inv_x_to_eps,
@@ -565,16 +566,22 @@ def _FFT_Robust_loss(
             f2_loss = None
 
     reg_loss = 0
+    shape = _ellipse_shape(PARAMS[i]["ellip"], PARAMS[i]["pa"])
     has_fmodes = PARAMS[i]["m"] is not None and len(PARAMS[i]["m"]) > 0
     if has_fmodes:
         fmode_scale = 1.0 / len(PARAMS[i]["m"])
     for j in _active_neighbors(i, active_mask, len(R)):
-        neighbor_reg_loss = abs(
-            (PARAMS[i]["ellip"] - PARAMS[j]["ellip"]) / (1 - PARAMS[j]["ellip"])
-        )
-        neighbor_reg_loss += abs(
-            Angle_TwoAngles_sin(PARAMS[i]["pa"], PARAMS[j]["pa"]) / (0.2)
-        )
+        if any(p["C"] is not None or p["m"] is not None for p in (PARAMS[i], PARAMS[j])):
+            # A round base ellipse can still have an oriented distortion.
+            # Keep the existing penalty until the full shape is represented.
+            neighbor_reg_loss = abs(
+                (PARAMS[i]["ellip"] - PARAMS[j]["ellip"]) / (1 - PARAMS[j]["ellip"])
+            )
+            neighbor_reg_loss += abs(
+                Angle_TwoAngles_sin(PARAMS[i]["pa"], PARAMS[j]["pa"]) / 0.2
+            )
+        else:
+            neighbor_reg_loss = abs(shape - _ellipse_shape(PARAMS[j]["ellip"], PARAMS[j]["pa"]))
         if has_fmodes and PARAMS[j]["m"] is not None:
             for m in range(len(PARAMS[i]["m"])):
                 neighbor_reg_loss += fmode_scale * abs(
@@ -694,20 +701,18 @@ def Isophote_Fit_FFT_Robust(IMG, results, options):
     coefficient power, regularized for robustness. A series of
     isophotes are constructed which grow geometrically until they
     begin to reach the background level.  Then the algorithm
-    iteratively updates the position angle and ellipticity of each
-    isophote individually for many rounds.  Each round updates every
-    isophote in a random order.  Each round cycles between three
-    options: optimizing position angle, ellipticity, or both.  To
-    optimize the parameters, 5 values (pa, ellip, or both) are
-    randomly sampled and the "loss" is computed.  The loss is a
-    combination of the relative amplitude of the second FFT
-    coefficient (compared to the median flux), and a regularization
-    term.  The regularization term penalizes adjacent isophotes for
-    having different position angle or ellipticity (using the l1
-    norm).  Thus, all the isophotes are coupled and tend to fit
-    smoothly varying isophotes.  When the optimization has completed
-    three rounds without any isophotes updating, the profile is
-    assumed to have converged.
+    updates each isophote in a random order. Ellipticity and PA are
+    proposed together in the two components of z = -ln(b/a) exp(2j PA).
+    Gaussian component steps have standard deviation 0.03; the
+    magnitude is reflected at the bound set by ap_iso_ellip_max.
+    A circle has z=0, so proposals do not depend on its undefined PA.
+    The loss combines the relative second FFT amplitude with a penalty
+    proportional to the distance between neighbouring shape vectors.
+    This couples their axis ratios and orientations, with decreasing
+    sensitivity to PA near circularity. Superellipse and Fourier-mode
+    fits retain their existing regularization because the extra shape
+    parameters can give a round base ellipse a meaningful orientation.
+    The existing stopping rules and scheduling of their proposals are retained.
 
     An uncertainty for each ellipticity and position angle value is
     determined by repeatedly re-optimizing each ellipse with slight
@@ -731,9 +736,9 @@ def Isophote_Fit_FFT_Robust(IMG, results, options):
       fitting further out in the galaxy image.
 
     ap_regularize_scale : float, default 1
-      scale factor to apply to regularization coupling factor between
-      isophotes.  Default of 1, larger values make smoother fits,
-      smaller values give more chaotic fits.
+      Scale of the distance between neighbouring log-q shape vectors.
+      Larger values favour smoother shapes. PA differences lose weight
+      near circularity; this scale differs from the former separate penalties.
 
     ap_isofit_robustclip : float, default 0.15
       quantile of flux values at which to clip when extracting values
@@ -773,18 +778,6 @@ def Isophote_Fit_FFT_Robust(IMG, results, options):
     ap_isofit_interpolate_method : string, default 'bilinear'
       Select method for flux interpolation while fitting isophotes.
       Options are 'lanczos', 'bicubic', and 'bilinear'.
-
-    ap_isofit_perturbscale_ellip : float, default 0.03
-      Sampling scale for random adjustments to ellipticity made while
-      optimizing isophotes. Smaller values will converge faster, but
-      get stuck in local minima; larger values will escape local
-      minima, but takes longer to converge.
-
-    ap_isofit_perturbscale_pa : float, default 0.06
-      Sampling scale for random adjustments to position angle made
-      while optimizing isophotes. Smaller values will converge faster,
-      but get stuck in local minima; larger values will escape local
-      minima, but takes longer to converge.
 
     ap_isofit_iterlimitmax : int, default 300
       Maximum number of iterations (each iteration adjusts every
@@ -888,7 +881,7 @@ def Isophote_Fit_FFT_Robust(IMG, results, options):
     # Fit isophotes
     ######################################################################
     perturb_scale = 0.03
-    # The log-q factor 2/pi preserves the previous local ellip step at ellip=0.5.
+    # Each log-q shape component has this scatter; PA steps grow near a circle.
     regularize_scale = options["ap_regularize_scale"] if "ap_regularize_scale" in options else 1.0
     robust_clip = options["ap_isofit_robustclip"] if "ap_isofit_robustclip" in options else 0.15
     N_perturb = 5
@@ -939,6 +932,7 @@ def Isophote_Fit_FFT_Robust(IMG, results, options):
         raise Exception(
             "Unable to initialize ellipse fit, too few radii have enough unmasked samples."
         )
+    # Keep two ellipse slots to preserve the C/Fourier proposal schedule.
     param_cycle = 2
     base_params = 2 + int(fit_superellipse)
     while count < iterlimitmax:
@@ -975,17 +969,13 @@ def Isophote_Fit_FFT_Robust(IMG, results, options):
             )
             for n in range(N_perturb):
                 perturbations.append(deepcopy(parameters))
-                if count % param_cycle == 0:
-                    perturbations[-1][i]["ellip"] = _perturb_ellip(
+                if count % param_cycle < 2:
+                    perturbations[-1][i]["ellip"], perturbations[-1][i]["pa"] = _perturb_ellipse(
                         perturbations[-1][i]["ellip"],
-                        np.random.normal(loc=0, scale=perturb_scale * 2 / np.pi),
+                        perturbations[-1][i]["pa"],
+                        np.random.normal(loc=0, scale=perturb_scale, size=2),
                         ellip_max,
                     )
-                elif count % param_cycle == 1:
-                    perturbations[-1][i]["pa"] = (
-                        perturbations[-1][i]["pa"]
-                        + np.random.normal(loc=0, scale=np.pi * perturb_scale)
-                    ) % np.pi
                 elif (count % param_cycle) == 2 and not parameters[i]["C"] is None:
                     perturbations[-1][i]["C"] = 10 ** (
                         np.log10(perturbations[-1][i]["C"])
@@ -1348,9 +1338,9 @@ def _FFT_mean_loss(
             f2_loss = np.abs(coefs[2]) / norm
 
     reg_loss = 0
+    shape = _ellipse_shape(E[i], PA[i])
     for j in _active_neighbors(i, active_mask, len(R)):
-        neighbor_reg_loss = abs((E[i] - E[j]) / (1 - E[j]))
-        neighbor_reg_loss += abs(Angle_TwoAngles_sin(PA[i], PA[j]) / (0.3))
+        neighbor_reg_loss = abs(shape - _ellipse_shape(E[j], PA[j]))
         # The geometric radius grid makes index separation proportional to log-radius distance.
         reg_loss += neighbor_reg_loss / abs(i - j)
 
@@ -1382,9 +1372,9 @@ def Isophote_Fit_FFT_mean(IMG, results, options):
       fitting further out in the galaxy image.
 
     ap_regularize_scale : float, default 1
-      scale factor to apply to regularization coupling factor between
-      isophotes.  Default of 1, larger values make smoother fits,
-      smaller values give more chaotic fits.
+      Scale of the distance between neighbouring log-q shape vectors.
+      Larger values favour smoother shapes. PA differences lose weight
+      near circularity; this scale differs from the former separate penalties.
 
     ap_isofit_interpolate_method : string, default 'bilinear'
       Select method for flux interpolation while fitting isophotes.
@@ -1461,7 +1451,7 @@ def Isophote_Fit_FFT_mean(IMG, results, options):
 
     # Fit isophotes
     ######################################################################
-    perturb_scale = np.array([0.03, 0.06])
+    perturb_scale = 0.03
     regularize_scale = options["ap_regularize_scale"] if "ap_regularize_scale" in options else 1.0
     N_perturb = 5
 
@@ -1519,16 +1509,12 @@ def Isophote_Fit_FFT_mean(IMG, results, options):
             )
             for n in range(N_perturb):
                 perturbations.append({"ellip": copy(ellip), "pa": copy(pa)})
-                if count % 3 in [0, 1]:
-                    perturbations[-1]["ellip"][i] = _perturb_ellip(
-                        perturbations[-1]["ellip"][i],
-                        np.random.normal(loc=0, scale=perturb_scale[0] * 2 / np.pi),
-                        ellip_max,
-                    )
-                if count % 3 in [1, 2]:
-                    perturbations[-1]["pa"][i] = (
-                        perturbations[-1]["pa"][i] + np.random.normal(loc=0, scale=perturb_scale[1])
-                    ) % np.pi
+                perturbations[-1]["ellip"][i], perturbations[-1]["pa"][i] = _perturb_ellipse(
+                    perturbations[-1]["ellip"][i],
+                    perturbations[-1]["pa"][i],
+                    np.random.normal(loc=0, scale=perturb_scale, size=2),
+                    ellip_max,
+                )
                 perturbations[-1]["loss"] = _FFT_mean_loss(
                     dat,
                     sample_radii,

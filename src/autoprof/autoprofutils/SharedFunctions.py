@@ -1402,6 +1402,22 @@ def _perturb_ellip(ellip, delta, ellip_max=_DEFAULT_ELLIP_MAX):
     return _logq_to_ellip(logq_max - np.abs(trial - logq_max), ellip_max)
 
 
+def _ellipse_shape(ellip, pa):
+    """Return the spin-2 log-axis-ratio shape for valid ellipticities below one."""
+    return -np.log1p(-ellip) * np.exp(2j * pa)
+
+
+def _perturb_ellipse(ellip, pa, delta, ellip_max=_DEFAULT_ELLIP_MAX):
+    """Perturb both shape components and reflect the magnitude at its bound."""
+    shape = _ellipse_shape(np.clip(ellip, 0.0, ellip_max), pa)
+    trial = shape + delta[0] + 1j * delta[1]
+    logq_max = -np.log1p(-ellip_max)
+    radius = np.abs(trial) % (2 * logq_max)
+    radius = logq_max - np.abs(radius - logq_max)
+    # At exactly zero the PA convention is zero; it does not affect the ellipse.
+    return _logq_to_ellip(radius, ellip_max), (np.angle(trial) / 2) % np.pi
+
+
 def _x_to_eps(x):
     """
     Internal, function to map the reals to the range (0.0,1.0)
