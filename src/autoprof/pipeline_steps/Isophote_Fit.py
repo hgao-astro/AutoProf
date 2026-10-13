@@ -604,6 +604,70 @@ def _FFT_Robust_loss(
     return f2_loss * (1 + reg_loss * reg_scale)
 
 
+def _check_ellipse_directions(parameters, active_mask, loss, ellip_max, step):
+    """Refine eight shape directions, halving the step until a radius improves.
+
+    Cache directions in pi/32 ticks; refine at offsets 22.5, 11.25 and 5.625
+    degrees, using at most fourteen trials per length. The floor is .15/256.
+    """
+    changed = 0
+    accepted_steps = {}
+    diagonal = 1 / np.sqrt(2)
+    ticks = (0, 32, 16, 48, 8, 56, 24, 40)
+    directions = {k: (np.cos(k * np.pi / 32), np.sin(k * np.pi / 32)) for k in range(64)}
+    # Preserve the original axis/diagonal values and tie-breaking order.
+    directions.update(
+        zip(
+            ticks,
+            (
+                (1, 0), (-1, 0), (0, 1), (0, -1),
+                (diagonal, diagonal), (diagonal, -diagonal),
+                (-diagonal, diagonal), (-diagonal, -diagonal),
+            ),
+        )
+    )
+    for i in np.flatnonzero(active_mask):
+        current_loss = loss(parameters, i)
+        if not np.isfinite(current_loss):
+            active_mask[i] = False
+            changed += 1
+            continue
+        trial = list(parameters)
+        for scale in step * 2.0 ** np.arange(0, -9, -1):
+            if scale < 0.15 / 256:
+                break
+            cache = {}
+
+            def poll(tick):
+                tick %= 64
+                if tick not in cache:
+                    dx, dy = directions[tick]
+                    trial[i] = dict(parameters[i])
+                    trial[i]["ellip"], trial[i]["pa"] = _perturb_ellipse(
+                        parameters[i]["ellip"], parameters[i]["pa"], (scale * dx, scale * dy), ellip_max
+                    )
+                    value = loss(trial, i)
+                    cache[tick] = (value if np.isfinite(value) else np.inf, trial[i])
+
+            for tick in ticks:
+                poll(tick)
+            # Refine even when all eight initial trials fail to improve.
+            for offset in (4, 2, 1):
+                best_tick = min(cache, key=lambda tick: cache[tick][0])
+                if not np.isfinite(cache[best_tick][0]):
+                    break
+                poll(best_tick - offset)
+                poll(best_tick + offset)
+            best_loss, best_params = min(cache.values(), key=lambda value: value[0])
+            if best_loss < current_loss:
+                parameters[i] = best_params
+                accepted_steps[int(i)] = float(scale)
+                parameters[i].pop("loss", None)
+                changed += 1
+                break
+    return changed, accepted_steps
+
+
 def _FFT_Robust_Errors(
     dat,
     R,
@@ -779,7 +843,7 @@ def Isophote_Fit_FFT_Robust(IMG, results, options):
       Select method for flux interpolation while fitting isophotes.
       Options are 'lanczos', 'bicubic', and 'bilinear'.
 
-    ap_isofit_iterlimitmax : int, default 300
+    ap_isofit_iterlimitmax : int, default 1000
       Maximum number of iterations (each iteration adjusts every
       isophote once) before automatically stopping optimization. For
       galaxies with lots of structure (ie detailed spiral arms) more
@@ -791,12 +855,14 @@ def Isophote_Fit_FFT_Robust(IMG, results, options):
       stop.
 
     ap_isofit_iterstopnochange : float, default 3
-      Number of iterations with no updates to parameters before
-      optimization procedure stops. Lower values will process galaxies
-      faster, but may still be stuck in local minima, higher values
-      are more likely to converge on the global minimum but can take a
-      long time to run. Fractional values are allowed though not
-      recomended.
+      Trigger a stopping check after this value times max(1, N - 1)
+      consecutive unsuccessful updates, for N active radii. Accepted updates
+      reset the counter. Ordinary ellipse fits verify stopping with guided
+      searches down to a fixed step of 0.15/256. Improvements resume random
+      fitting, using the largest accepted step for both searches; otherwise
+      fitting stops. The initial random RMS/directional step is 0.15.
+      C/Fourier fits use the counter-only rule. Fractional values are allowed;
+      the maximum iteration limit still applies.
 
     Notes
     ----------
@@ -881,7 +947,6 @@ def Isophote_Fit_FFT_Robust(IMG, results, options):
     # Fit isophotes
     ######################################################################
     perturb_scale = 0.03
-    # Each log-q shape component has this scatter; PA steps grow near a circle.
     regularize_scale = options["ap_regularize_scale"] if "ap_regularize_scale" in options else 1.0
     robust_clip = options["ap_isofit_robustclip"] if "ap_isofit_robustclip" in options else 0.15
     N_perturb = 5
@@ -889,6 +954,12 @@ def Isophote_Fit_FFT_Robust(IMG, results, options):
     fit_params = options["ap_isofit_fitcoefs"] if "ap_isofit_fitcoefs" in options else None
     fit_superellipse = (
         options["ap_isofit_superellipse"] if "ap_isofit_superellipse" in options else False
+    )
+    shape_step = 0.15
+    # RMS random displacement equals the first directional trial length.
+    shape_scatter = (
+        shape_step / np.sqrt(2)
+        if fit_params is None and not fit_superellipse else perturb_scale
     )
     parameters = list(
         {
@@ -948,32 +1019,27 @@ def Isophote_Fit_FFT_Robust(IMG, results, options):
         N_perturb = int(1 + (10 / np.sqrt(count)))
         activated_this_pass = False
 
+        def loss(params, i):
+            return _FFT_Robust_loss(
+                dat, sample_radii, params, i, use_center,
+                results["background noise"], mask=mask,
+                reg_scale=regularize_scale if count > 4 else 0,
+                robust_clip=robust_clip, fit_coefs=fit_coefs,
+                name=options["ap_name"], active_mask=active_mask,
+                interp_method=interp_method, rad_interp=rad_interp,
+            )
+
         for i in I:
             perturbations = []
             perturbations.append(deepcopy(parameters))
-            perturbations[-1][i]["loss"] = _FFT_Robust_loss(
-                dat,
-                sample_radii,
-                perturbations[-1],
-                i,
-                use_center,
-                results["background noise"],
-                mask=mask,
-                reg_scale=regularize_scale if count > 4 else 0,
-                robust_clip=robust_clip,
-                fit_coefs=fit_coefs,
-                name=options["ap_name"],
-                active_mask=active_mask,
-                interp_method=interp_method,
-                rad_interp=rad_interp,
-            )
+            perturbations[-1][i]["loss"] = loss(perturbations[-1], i)
             for n in range(N_perturb):
                 perturbations.append(deepcopy(parameters))
                 if count % param_cycle < 2:
                     perturbations[-1][i]["ellip"], perturbations[-1][i]["pa"] = _perturb_ellipse(
                         perturbations[-1][i]["ellip"],
                         perturbations[-1][i]["pa"],
-                        np.random.normal(loc=0, scale=perturb_scale, size=2),
+                        np.random.normal(loc=0, scale=shape_scatter, size=2),
                         ellip_max,
                     )
                 elif (count % param_cycle) == 2 and not parameters[i]["C"] is None:
@@ -998,22 +1064,7 @@ def Isophote_Fit_FFT_Robust(IMG, results, options):
                     raise Exception(
                         "Unrecognized optimization parameter id: %i" % (count % param_cycle)
                     )
-                perturbations[-1][i]["loss"] = _FFT_Robust_loss(
-                    dat,
-                    sample_radii,
-                    perturbations[-1],
-                    i,
-                    use_center,
-                    results["background noise"],
-                    mask=mask,
-                    reg_scale=regularize_scale if count > 4 else 0,
-                    robust_clip=robust_clip,
-                    fit_coefs=fit_coefs,
-                    name=options["ap_name"],
-                    active_mask=active_mask,
-                    interp_method=interp_method,
-                    rad_interp=rad_interp,
-                )
+                perturbations[-1][i]["loss"] = loss(perturbations[-1], i)
 
             if not np.isfinite(perturbations[0][i]["loss"]):
                 active_mask[i] = False
@@ -1154,6 +1205,17 @@ def Isophote_Fit_FFT_Robust(IMG, results, options):
             continue
         stop_threshold = iterstopnochange * max(1, len(np.flatnonzero(active_mask)) - 1)
         if not (count_nochange < stop_threshold or count < iterlimitmin):
+            if fit_params is None and not fit_superellipse:
+                checked_updates, accepted_steps = _check_ellipse_directions(
+                    parameters, active_mask, loss, ellip_max, shape_step,
+                )
+                logging.debug("%s: Directional check changed %i radii", options["ap_name"], checked_updates)
+                if checked_updates:
+                    if accepted_steps:
+                        shape_step = max(accepted_steps.values())
+                        shape_scatter = shape_step / np.sqrt(2)
+                    count_nochange = 0
+                    continue
             break
 
     active_indices = np.flatnonzero(active_mask)

@@ -521,7 +521,7 @@ ap_isofit_interpolate_method (string, default 'bilinear')
 Select method for flux interpolation while fitting or checking isophotes.
 Options are 'lanczos', 'bicubic', and 'bilinear'.
 
-ap_isofit_iterlimitmax (int, default 300)
+ap_isofit_iterlimitmax (int, default 1000)
 ----------------------------------------------------------------------
 
 **Referencing Methods**
@@ -557,12 +557,16 @@ ap_isofit_iterstopnochange (float, default 3)
 
 **Description**
 
-Number of iterations with no updates to parameters before
-optimization procedure stops. Lower values will process galaxies
-faster, but may still be stuck in local minima, higher values
-are more likely to converge on the global minimum but can take a
-long time to run. Fractional values are allowed though not
-recomended.
+For N active radii, trigger a stopping check after this value times
+max(1, N - 1) consecutive unsuccessful radius updates. An accepted update
+resets the counter. Larger values increase runtime; fractional values are allowed.
+
+Ordinary ellipse fits check all active radii with guided directional searches
+in joint log-q/PA coordinates, halving steps down to the fixed floor 0.15/256.
+Any improvement resumes random fitting; an unchanged check allows stopping.
+Random RMS and directional steps start at 0.15 and restart at the largest
+step accepted in the check. The iteration cap still applies.
+Superellipse and Fourier-shape fits use the counter-only stopping rule.
 
 ap_isofit_losscoefs (tuple, default (2,))
 ----------------------------------------------------------------------
@@ -853,7 +857,9 @@ has z=0, so its PA does not contribute to the penalty.
 The default is 1; larger values favour smoother shapes. This changes the
 relative weighting from the previous separate ellipticity and PA penalties,
 so previously tuned values may need adjustment. The multiplicative loss
-form is unchanged. Superellipse and Fourier-mode fits retain their previous
+form is unchanged. Robust fitting accepts moves using the updated radius's
+local loss; the summed loss need not decrease. The first four passes omit
+regularization. Superellipse and Fourier-mode fits retain their previous
 regularization: a round base ellipse can still have a meaningful orientation
 when these distortions are present.
 
