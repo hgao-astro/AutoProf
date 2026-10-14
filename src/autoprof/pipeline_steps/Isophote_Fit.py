@@ -19,6 +19,7 @@ from ..autoprofutils.SharedFunctions import (
     _interpolate_invalid_isophote_samples,
     _validate_interpolate_method,
     _photutils_masked_data,
+    Read_Image,
     _DEFAULT_ELLIP_MAX,
     _resolve_ellip_max,
     _ellip_to_logq,
@@ -77,7 +78,10 @@ def _has_enough_isophote_samples(
     max_mode=2,
     interp_method="bilinear",
     rad_interp=None,
+    variance=None,
 ):
+    if variance is not None:
+        return _harmonic_ring_operator(dat, radius, params, center, variance, mask) is not None
     kwargs = {}
     if interp_method is not None:
         kwargs["interp_method"] = interp_method
@@ -201,6 +205,7 @@ def _activate_inactive_radii(
     interp_method="bilinear",
     rad_interp=None,
     ellip_max=_DEFAULT_ELLIP_MAX,
+    variance=None,
 ):
     _interpolate_inactive_parameters(sample_radii, parameters, active_mask, ellip_max)
     activated = []
@@ -214,6 +219,7 @@ def _activate_inactive_radii(
             max_mode=max_mode,
             interp_method=interp_method,
             rad_interp=rad_interp,
+            variance=variance,
         ):
             active_mask[i] = True
             activated.append(i)
@@ -520,6 +526,96 @@ def _pa_smooth(R, PA, deg):
     return ((np.arctan2(pred_pa_s, pred_pa_c)) % (2 * np.pi)) / 2
 
 
+def _isofit_variance(dat, noise, options):
+    """Resolve total variance from an RMS map or background plus optional source noise."""
+    rms = options.get("ap_isofit_rms")
+    if rms is None:
+        if not np.isfinite(noise) or noise <= 0:
+            raise ValueError("Harmonic fitting requires positive background noise or ap_isofit_rms.")
+        variance = np.full(dat.shape, noise**2, dtype=float)
+        gain = options.get("ap_isofit_gain")
+        if gain is not None:
+            gain = np.asarray(gain, dtype=float)
+            if gain.ndim != 0 or not np.isfinite(gain) or gain <= 0:
+                raise ValueError("ap_isofit_gain must be a finite positive scalar.")
+            # dat is already background-subtracted; masked pixels remain excluded.
+            variance += np.maximum(dat, 0.0) / gain
+        return variance
+    if isinstance(rms, str):
+        rms = Read_Image(rms, {})
+    rms = np.asarray(rms, dtype=float)
+    if rms.shape != dat.shape:
+        raise ValueError("ap_isofit_rms must have the same shape as the image.")
+    # Nonpositive/nonfinite RMS pixels are excluded, not assigned infinite weight.
+    return np.where(np.isfinite(rms) & (rms > 0), rms**2, np.nan)
+
+
+def _harmonic_ring_operator(dat, radius, params, center, variance, mask):
+    """Fit second harmonics on one ring, including shared-pixel covariance."""
+    ellip, pa = params["ellip"], params["pa"]
+    if not np.all(np.isfinite((radius, ellip, pa))) or radius <= 0:
+        return None
+    n = max(15, int(0.9 * 2 * np.pi * radius))
+    theta = np.arange(n) * 2 * np.pi / n
+    height, width = dat.shape
+    pixel_variance = variance.ravel()
+    x, y = radius * np.cos(theta), radius * (1 - ellip) * np.sin(theta)
+    xp = center["x"] + x * np.cos(pa) - y * np.sin(pa)
+    yp = center["y"] + x * np.sin(pa) + y * np.cos(pa)
+    ix, iy = np.floor(xp).astype(int), np.floor(yp).astype(int)
+    good = (ix >= 0) & (iy >= 0) & (ix + 1 < width) & (iy + 1 < height)
+    dx, dy = xp - ix, yp - iy
+    # Safe indexing only; samples outside the image remain excluded.
+    ix, iy = np.clip(ix, 0, width - 2), np.clip(iy, 0, height - 2)
+    ids = np.stack((iy * width + ix, iy * width + ix + 1,
+                    (iy + 1) * width + ix, (iy + 1) * width + ix + 1), axis=1)
+    weights = np.stack(((1 - dx) * (1 - dy), dx * (1 - dy),
+                        (1 - dx) * dy, dx * dy), axis=1)
+    bad = (~np.isfinite(pixel_variance[ids]) | (pixel_variance[ids] <= 0)
+           | ~np.isfinite(dat.ravel()[ids]))
+    if mask is not None:
+        bad |= mask.ravel()[ids]
+    good &= ~np.any(bad, axis=1)
+    k = int(np.sum(good))
+    if k < 8 or k / n < 0.35:
+        return None
+    angles = theta[good]
+    if np.max(np.diff(np.r_[angles, angles[0] + 2 * np.pi])) > np.pi + 2 * np.pi / n:
+        return None
+    design = np.column_stack((np.ones(k), np.cos(angles), np.sin(angles),
+                              np.cos(2 * angles), np.sin(2 * angles)))
+    gram = design.T @ design
+    eigen = np.linalg.eigvalsh(gram)
+    if eigen[0] <= 1e-6 * eigen[-1]:
+        return None
+    harmonic = np.linalg.solve(gram, design.T)[3:5]
+    ids, weights = ids[good], weights[good]
+    coeff = (harmonic[:, :, None] * weights[None, :, :]).reshape(2, -1)
+    pixels, inverse = np.unique(ids.ravel(), return_inverse=True)
+    operator = np.array([np.bincount(inverse, weights=row, minlength=len(pixels)) for row in coeff])
+    covariance = (operator * pixel_variance[pixels]) @ operator.T
+    eigen = np.linalg.eigvalsh(covariance)
+    if eigen[0] <= 1e-10 * eigen[-1]:
+        return None
+    return pixels, operator, covariance
+
+
+def _harmonic_shape_loss(dat, R, parameters, i, center, variance, mask, reg_scale, active_mask):
+    fitted = _harmonic_ring_operator(dat, R[i], parameters[i], center, variance, mask)
+    if fitted is None:
+        return np.inf
+    pixels, operator, covariance = fitted
+    harmonics = operator @ dat.ravel()[pixels]
+    q2 = harmonics @ np.linalg.solve(covariance, harmonics)
+    shape = _ellipse_shape(parameters[i]["ellip"], parameters[i]["pa"])
+    penalty = sum(
+        abs(shape - _ellipse_shape(parameters[j]["ellip"], parameters[j]["pa"])) / abs(i - j)
+        for j in _active_neighbors(i, active_mask, len(R))
+    )
+    raw = q2 + reg_scale * penalty
+    return float(raw / (1 + raw)) if np.isfinite(raw) else np.inf
+
+
 def _FFT_Robust_loss(
     dat,
     R,
@@ -535,7 +631,10 @@ def _FFT_Robust_loss(
     active_mask=None,
     interp_method="bilinear",
     rad_interp=None,
+    variance=None,
 ):
+    if variance is not None:
+        return _harmonic_shape_loss(dat, R, PARAMS, i, C, variance, mask, reg_scale, active_mask)
     if fit_coefs is not None and len(fit_coefs) == 0:
         fit_coefs = None
     max_mode = _max_fit_mode(fit_coefs)
@@ -605,7 +704,7 @@ def _FFT_Robust_loss(
 
 
 def _check_ellipse_directions(parameters, active_mask, loss, ellip_max, step):
-    """Refine eight shape directions, halving the step until a radius improves.
+    """Try the inner neighbor, then refine directions until a radius improves.
 
     Cache directions in pi/32 ticks; refine at offsets 22.5, 11.25 and 5.625
     degrees, using at most fourteen trials per length. The floor is .15/256.
@@ -633,6 +732,19 @@ def _check_ellipse_directions(parameters, active_mask, loss, ellip_max, step):
             changed += 1
             continue
         trial = list(parameters)
+        radius_changed = False
+        inner = np.flatnonzero(active_mask[:i])
+        if len(inner):
+            j = inner[-1]
+            trial[i] = dict(parameters[i])
+            trial[i]["ellip"] = parameters[j]["ellip"]
+            trial[i]["pa"] = parameters[j]["pa"]
+            candidate_loss = loss(trial, i)
+            if np.isfinite(candidate_loss) and candidate_loss < current_loss:
+                parameters[i] = trial[i]
+                parameters[i].pop("loss", None)
+                current_loss = candidate_loss
+                radius_changed = True
         for scale in step * 2.0 ** np.arange(0, -9, -1):
             if scale < 0.15 / 256:
                 break
@@ -663,8 +775,9 @@ def _check_ellipse_directions(parameters, active_mask, loss, ellip_max, step):
                 parameters[i] = best_params
                 accepted_steps[int(i)] = float(scale)
                 parameters[i].pop("loss", None)
-                changed += 1
+                radius_changed = True
                 break
+        changed += int(radius_changed)
     return changed, accepted_steps
 
 
@@ -682,6 +795,7 @@ def _FFT_Robust_Errors(
     interp_method="bilinear",
     rad_interp=None,
     ellip_max=_DEFAULT_ELLIP_MAX,
+    variance=None,
 ):
 
     PARAMS = [dict(p, ellip=np.clip(p["ellip"], 0.0, ellip_max)) for p in PARAMS]
@@ -721,6 +835,7 @@ def _FFT_Robust_Errors(
                     name=name,
                     interp_method=interp_method,
                     rad_interp=rad_interp,
+                    variance=variance,
                 )
 
             if not np.isfinite(raw_loss(x0)):
@@ -758,25 +873,16 @@ def _FFT_Robust_Errors(
 
 
 def Isophote_Fit_FFT_Robust(IMG, results, options):
-    """Fit elliptical isophotes to a galaxy image using FFT coefficients and regularization.
+    """Fit isophotes with a harmonic objective and joint-shape regularization.
 
-    The isophotal fitting routine simultaneously optimizes a
-    collection of elliptical isophotes by minimizing the 2nd FFT
-    coefficient power, regularized for robustness. A series of
-    isophotes are constructed which grow geometrically until they
-    begin to reach the background level.  Then the algorithm
-    updates each isophote in a random order. Ellipticity and PA are
-    proposed together in the two components of z = -ln(b/a) exp(2j PA).
-    Gaussian component steps have standard deviation 0.03; the
-    magnitude is reflected at the bound set by ap_iso_ellip_max.
-    A circle has z=0, so proposals do not depend on its undefined PA.
-    The loss combines the relative second FFT amplitude with a penalty
-    proportional to the distance between neighbouring shape vectors.
-    This couples their axis ratios and orientations, with decreasing
-    sensitivity to PA near circularity. Superellipse and Fourier-mode
-    fits retain their existing regularization because the extra shape
-    parameters can give a round base ellipse a meaningful orientation.
-    The existing stopping rules and scheduling of their proposals are retained.
+    Ordinary bilinear ellipse fits minimize Q2 + lambda * sum(abs(z_i-z_j)
+    / abs(i-j)), where Q2 is the covariance-normalized second harmonic and
+    z = -ln(b/a) exp(2j PA). Harmonics are fit directly to valid samples,
+    without clipping or filling masked angular gaps. There is no gradient
+    significance gate. Shape proposals use an initial RMS displacement of
+    0.15. Before stopping, try the inner neighbor's geometry and guided
+    directional refinement. Other interpolation methods, custom loss modes,
+    superellipses and Fourier shapes retain the clipped FFT objective.
 
     An uncertainty for each ellipticity and position angle value is
     determined by repeatedly re-optimizing each ellipse with slight
@@ -799,16 +905,25 @@ def Isophote_Fit_FFT_Robust(IMG, results, options):
       background noise level. Default is 2, smaller values will end
       fitting further out in the galaxy image.
 
-    ap_regularize_scale : float, default 1
-      Scale of the distance between neighbouring log-q shape vectors.
-      Larger values favour smoother shapes. PA differences lose weight
-      near circularity; this scale differs from the former separate penalties.
+    ap_regularize_scale : float, default 4 for harmonic fitting, 1 otherwise
+      Additive shape penalty for Q2; multiplicative penalty for FFT fitting.
+      Larger values favour smoother shapes.
+
+    ap_isofit_rms : ndarray or string, default None
+      Total pixel RMS, including source noise, in image units. Supply an
+      image-shaped array or a primary-HDU FITS / NPY filename. Takes precedence
+      over ap_isofit_gain. Nonpositive/nonfinite RMS pixels are excluded.
+      Applies to ordinary bilinear ellipse fitting only.
+
+    ap_isofit_gain : float, default None
+      Positive effective gain in electrons per image unit. Without an RMS map,
+      add max(image - background, 0) / gain to the background variance, without
+      smoothing. Omit both noise options to use background variance only.
+      Applies to ordinary bilinear ellipse fitting with loss mode 2 only.
 
     ap_isofit_robustclip : float, default 0.15
-      quantile of flux values at which to clip when extracting values
-      along an isophote. Clipping outlier values (such as very bright
-      stars) while fitting isophotes allows for robust computation of
-      FFT coefficients along an isophote.
+      Upper flux fraction clipped in the legacy FFT objective. The harmonic
+      objective does not clip; contaminants should be masked.
 
     ap_isofit_losscoefs : tuple, default (2,)
       Tuple of FFT coefficients to use in optimization
@@ -947,7 +1062,6 @@ def Isophote_Fit_FFT_Robust(IMG, results, options):
     # Fit isophotes
     ######################################################################
     perturb_scale = 0.03
-    regularize_scale = options["ap_regularize_scale"] if "ap_regularize_scale" in options else 1.0
     robust_clip = options["ap_isofit_robustclip"] if "ap_isofit_robustclip" in options else 0.15
     N_perturb = 5
     fit_coefs = options["ap_isofit_losscoefs"] if "ap_isofit_losscoefs" in options else None
@@ -955,6 +1069,20 @@ def Isophote_Fit_FFT_Robust(IMG, results, options):
     fit_superellipse = (
         options["ap_isofit_superellipse"] if "ap_isofit_superellipse" in options else False
     )
+    use_harmonic = (
+        fit_params is None and not fit_superellipse and interp_method == "bilinear"
+        and (fit_coefs is None or tuple(fit_coefs) in ((), (2,)))
+    )
+    if not use_harmonic and (
+        options.get("ap_isofit_rms") is not None or options.get("ap_isofit_gain") is not None
+    ):
+        raise ValueError(
+            "ap_isofit_rms and ap_isofit_gain require ordinary bilinear ellipse fitting with loss mode 2."
+        )
+    variance = _isofit_variance(dat, results["background noise"], options) if use_harmonic else None
+    regularize_scale = options.get("ap_regularize_scale", 4.0 if use_harmonic else 1.0)
+    logging.info("%s: Using %s objective", options["ap_name"],
+                 "additive harmonic Q2" if use_harmonic else "multiplicative clipped FFT")
     shape_step = 0.15
     # RMS random displacement equals the first directional trial length.
     shape_scatter = (
@@ -995,6 +1123,7 @@ def Isophote_Fit_FFT_Robust(IMG, results, options):
                 max_mode=_max_fit_mode(fit_coefs),
                 interp_method=interp_method,
                 rad_interp=rad_interp,
+                variance=variance,
             )
             for i in range(len(sample_radii))
         )
@@ -1027,6 +1156,7 @@ def Isophote_Fit_FFT_Robust(IMG, results, options):
                 robust_clip=robust_clip, fit_coefs=fit_coefs,
                 name=options["ap_name"], active_mask=active_mask,
                 interp_method=interp_method, rad_interp=rad_interp,
+                variance=variance,
             )
 
         for i in I:
@@ -1093,6 +1223,7 @@ def Isophote_Fit_FFT_Robust(IMG, results, options):
                     interp_method=interp_method,
                     rad_interp=rad_interp,
                     ellip_max=ellip_max,
+                    variance=variance,
                 )
                 if len(activated) > 0:
                     count_nochange = 0
@@ -1249,6 +1380,7 @@ def Isophote_Fit_FFT_Robust(IMG, results, options):
         interp_method=interp_method,
         rad_interp=rad_interp,
         ellip_max=ellip_max,
+        variance=variance,
     )
     for i in range(len(parameters)):
         parameters[i]["ellip err"] = ellip_err[i]

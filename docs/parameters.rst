@@ -298,6 +298,8 @@ than this number times the PSF FWHM. This cutoff is shared by
 initialization, isophote fitting, profile extraction, radial profiles,
 and check-fit diagnostics. Isophote samples used by center finding always
 use interpolation.
+Harmonic Q2 fitting uses bilinear interpolation at every fitted radius to
+propagate pixel noise consistently; this cutoff still controls its radius selection.
 
 ap_iso_interpolate_window (int, default 3)
 ----------------------------------------------------------------------
@@ -506,6 +508,21 @@ decomposition along fitted elliptical isophotes. This can
 improve the fit result, though it is less stable and so users
 should examine the results after fitting.
 
+ap_isofit_gain (float, default None)
+----------------------------------------------------------------------
+
+**Referencing Methods**
+
+- :func:`~autoprof.pipeline_steps.Isophote_Fit.Isophote_Fit_FFT_Robust`
+
+**Description**
+
+Effective gain in electrons per image unit; must be finite and positive.
+Without ``ap_isofit_rms``, add ``max(image - background, 0) / gain`` to the
+background variance, using raw pixels without smoothing. Omit both options
+to use background variance only. Applies to ordinary bilinear ellipse fits
+with loss mode 2; a supplied total RMS map takes precedence.
+
 ap_isofit_interpolate_method (string, default 'bilinear')
 ----------------------------------------------------------------------
 
@@ -563,6 +580,7 @@ resets the counter. Larger values increase runtime; fractional values are allowe
 
 Ordinary ellipse fits check all active radii with guided directional searches
 in joint log-q/PA coordinates, halving steps down to the fixed floor 0.15/256.
+Each radius first tries the nearest active inner radius's geometry.
 Any improvement resumes random fitting; an unchanged check allows stopping.
 Random RMS and directional steps start at 0.15 and restart at the largest
 step accepted in the check. The iteration cap still applies.
@@ -580,6 +598,8 @@ ap_isofit_losscoefs (tuple, default (2,))
 Tuple of FFT coefficients to use in optimization
 procedure. AutoProf will attemp to minimize the power in all
 listed FFT coefficients. Must be a tuple, not a list.
+Ordinary bilinear ellipse fits with mode 2 use the direct harmonic Q2 objective;
+other modes retain the FFT objective.
 
 ap_isofit_perturbscale_ellip (float, default 0.03)
 ----------------------------------------------------------------------
@@ -609,6 +629,22 @@ This legacy documented option is not read by the native FFT fitters.
 Joint ellipticity/PA proposals use a fixed standard deviation of
 0.03 in each log-q shape component.
 
+ap_isofit_rms (ndarray or string, default None)
+----------------------------------------------------------------------
+
+**Referencing Methods**
+
+- :func:`~autoprof.pipeline_steps.Isophote_Fit.Isophote_Fit_FFT_Robust`
+
+**Description**
+
+Total pixel RMS, including source noise, in the same units and shape as the
+image. Supply an array or a primary-HDU FITS / NPY filename. Takes precedence
+over ``ap_isofit_gain``; omit both to use background variance only.
+Nonpositive/nonfinite RMS pixels are excluded.
+This option applies only to ordinary bilinear ellipse fits with loss mode 2.
+Covariance propagation assumes independent input-pixel noise.
+
 ap_isofit_robustclip (float, default 0.15)
 ----------------------------------------------------------------------
 
@@ -618,10 +654,9 @@ ap_isofit_robustclip (float, default 0.15)
 
 **Description**
 
-quantile of flux values at which to clip when extracting values
-along an isophote. Clipping outlier values (such as very bright
-stars) while fitting isophotes allows for robust computation of
-FFT coefficients along an isophote.
+Upper flux fraction clipped by the legacy FFT objective. Ordinary bilinear
+ellipse fits use direct harmonic fitting without clipping or filling masked
+angular gaps; mask contaminants explicitly for these fits.
 
 ap_isofit_superellipse (bool, default False)
 ----------------------------------------------------------------------
@@ -838,7 +873,7 @@ ap_radialprofiles_width (float, default 15)
 
 User set width of radial sampling wedges in degrees.
 
-ap_regularize_scale (float, default 1)
+ap_regularize_scale (float, default 4 for harmonic fitting, 1 otherwise)
 ----------------------------------------------------------------------
 
 **Referencing Methods**
@@ -854,14 +889,14 @@ penalty is abs(z_i - z_j), divided by the separation in fit-radius indices.
 It is symmetric and invariant under a common rotation. A circular isophote
 has z=0, so its PA does not contribute to the penalty.
 
-The default is 1; larger values favour smoother shapes. This changes the
-relative weighting from the previous separate ellipticity and PA penalties,
-so previously tuned values may need adjustment. The multiplicative loss
-form is unchanged. Robust fitting accepts moves using the updated radius's
-local loss; the summed loss need not decrease. The first four passes omit
-regularization. Superellipse and Fourier-mode fits retain their previous
-regularization: a round base ellipse can still have a meaningful orientation
-when these distortions are present.
+Ordinary bilinear ellipse fits minimize Q2 + scale * penalty, with default 4.
+Q2 is the covariance-normalized second harmonic, using only the fitted ring
+for sampling and coverage. Shared bilinear pixels are accounted for; there
+is no gradient-significance gate. Other interpolation methods,
+custom loss modes, superellipse/Fourier shapes, and the mean fitter retain
+their multiplicative objective and default 1. Previously tuned strengths may
+need adjustment. Larger values favour smoother shapes. Acceptance uses the
+updated radius's local loss; the first four passes omit regularization.
 
 ap_sampleendR (float, default None)
 ----------------------------------------------------------------------
