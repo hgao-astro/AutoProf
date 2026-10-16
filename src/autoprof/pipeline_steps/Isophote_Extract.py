@@ -16,14 +16,13 @@ import sys
 import os
 
 from ..autoprofutils.SharedFunctions import (
-    _x_to_pa,
     _logq_to_ellip,
-    _ellip_to_logq,
+    _ellipse_shape,
     _resolve_ellip_max,
-    _inv_x_to_pa,
     SBprof_to_COG_errorprop,
     _iso_extract,
     _iso_between,
+    _isophote_band_limits,
     _iso_interpolate_radius,
     _resolve_isoextract_interp_method,
     _validate_interpolate_method,
@@ -75,9 +74,27 @@ def _isoband_flux_threshold(results, options, zeropoint):
             options["ap_pixscale"],
             zeropoint,
         )
-    return results["background noise"] * (
-        options["ap_isoband_start"] if "ap_isoband_start" in options else 2
+    threshold = options.get(
+        "ap_isoband_start",
+        results.get("fit band start", options.get("ap_isofit_band_start", 5.0)),
     )
+    return None if threshold is None else results["background noise"] * threshold
+
+
+def _isoband_limits(R, options):
+    """Use shared harmonic-mean edges unless a relative or fixed width is set."""
+    R = np.asarray(R, dtype=float)
+    if options.get("ap_isoband_fixed", False):
+        width = options.get("ap_isoband_width", 0.5)
+        return R - width, R + width
+    if "ap_isoband_width" in options:
+        width = R * options["ap_isoband_width"]
+        return R - width, R + width
+    if len(R) < 2:
+        step = options.get("ap_samplegeometricscale", options.get("ap_scale", 0.2))
+        width = R * step / (2 + step)
+        return R - width, R + width
+    return _isophote_band_limits(R)
 
 
 def _normalize_sampling_method(method):
@@ -280,6 +297,10 @@ def _Generate_Profile(IMG, results, R, parameters, options, forced_sampling_meth
     measure_coefs = "ap_iso_measurecoefs" in options and options["ap_iso_measurecoefs"] is not None
     rad_interp = _iso_interpolate_radius(options, results)
     isoband_flux_threshold = _isoband_flux_threshold(results, options, zeropoint)
+    band_lower, band_upper = _isoband_limits(R, options)
+    custom_bandwidth = "ap_isoband_width" in options or options.get("ap_isoband_fixed", False)
+    previous_band = None
+    warned_band_overlap = False
     isoextract_interp_method = _validate_interpolate_method(
         options["ap_isoextract_interpolate_method"]
         if "ap_isoextract_interpolate_method" in options
@@ -287,12 +308,6 @@ def _Generate_Profile(IMG, results, R, parameters, options, forced_sampling_meth
         "ap_isoextract_interpolate_method",
     )
     for i in range(len(R)):
-        if "ap_isoband_fixed" in options and options["ap_isoband_fixed"]:
-            isobandwidth = options["ap_isoband_width"] if "ap_isoband_width" in options else 0.5
-        else:
-            isobandwidth = R[i] * (
-                options["ap_isoband_width"] if "ap_isoband_width" in options else 0.025
-            )
         forced_sampling_method = (
             forced_sampling_methods[i]
             if forced_sampling_methods is not None and i < len(forced_sampling_methods)
@@ -304,7 +319,9 @@ def _Generate_Profile(IMG, results, R, parameters, options, forced_sampling_meth
         if forced_sampling_method is not None:
             sampling_method = forced_sampling_method
         elif banding_started or (
-            medflux <= isoband_flux_threshold and isobandwidth >= 0.5
+            isoband_flux_threshold is not None
+            and medflux <= isoband_flux_threshold
+            and band_upper[i] - band_lower[i] >= 1.0
         ):
             sampling_method = "band"
             banding_started = True
@@ -323,15 +340,34 @@ def _Generate_Profile(IMG, results, R, parameters, options, forced_sampling_meth
             )
             last_line_sampling_method = sampling_method
         else:
+            if (
+                custom_bandwidth
+                and not warned_band_overlap
+                and previous_band is not None
+                and band_lower[i] < band_upper[previous_band]
+                and not np.isclose(
+                    band_lower[i], band_upper[previous_band], rtol=1e-10, atol=0
+                )
+            ):
+                logging.warning(
+                    "%s: Extraction bands at R=%.6g and R=%.6g overlap in radius; "
+                    "the requested ap_isoband_width can reuse pixels in consecutive measurements.",
+                    options.get("ap_name", "AutoProf"),
+                    R[previous_band],
+                    R[i],
+                )
+                warned_band_overlap = True
+            previous_band = i
             # Band sampling has a different effective noise behavior.
             isovals = _iso_between(
                 dat,
-                R[i] - isobandwidth,
-                R[i] + isobandwidth,
+                band_lower[i],
+                band_upper[i],
                 parameters[i],
                 results["center"],
                 mask=mask,
                 more=True,
+                include_inner=True,
                 sigmaclip=options["ap_isoclip"] if "ap_isoclip" in options else False,
                 sclip_iterations=(
                     options["ap_isoclip_iterations"] if "ap_isoclip_iterations" in options else 10
@@ -633,12 +669,13 @@ def Isophote_Extract_Forced(IMG, results, options):
       choose lanczos, bicubic, bilinear, nearest-neighbor, or band sampling
       for each forced isophote.
 
-    ap_isoband_start : float, default 2
+    ap_isoband_start : float, default ap_isofit_band_start
       The noise level at which to begin sampling a band of pixels to
       compute SB instead of sampling a line of pixels near the
       isophote in units of pixel flux noise. Will never initiate band
-      averaging if the band width is less than half a pixel. Once
-      initiated, band sampling is used at all larger radii.
+      averaging if the full band width is less than one pixel. Once
+      initiated, band sampling is used at all larger radii. Inherits the
+      fitting threshold (normally 5), including disabled fitting bands.
 
     ap_isoband_start_sb : float, default None
       Surface-brightness level in mag arcsec^-2 at which to begin
@@ -646,9 +683,11 @@ def Isophote_Extract_Forced(IMG, results, options):
       near the isophote. Once initiated, band sampling is used at all
       larger radii. Overrides *ap_isoband_start* if set.
 
-    ap_isoband_width : float, default 0.025
-      The relative size of the isophote bands to sample. flux values
-      will be sampled at +- *ap_isoband_width* \*R for each radius.
+    ap_isoband_width : float, default automatic
+      Omitted: bands share harmonic-mean boundaries, giving symmetric
+      half-width R*step/(2+step) on geometric grids. Explicit values
+      set a half-width relative to R, or in pixels with *ap_isoband_fixed*.
+      Warn once per profile if requested bands overlap in radius.
 
     ap_isoband_fixed : bool, default False
       Use a fixed width for the size of the isobands, the width is set
@@ -829,6 +868,16 @@ def Isophote_Extract_Forced(IMG, results, options):
     )
 
 
+def _sample_fitted_values(R, fit_R, values, indices, interpolate):
+    """Copy fitted/end-point values; spline only between distinct fitted radii."""
+    sampled = np.asarray(values, dtype=float)[indices].copy()
+    if np.any(interpolate):
+        sampled[interpolate] = UnivariateSpline(
+            fit_R, values, k=min(3, len(fit_R) - 1), s=0
+        )(R[interpolate])
+    return sampled
+
+
 def Isophote_Extract(IMG, results, options):
     """General method for extracting SB profiles.
 
@@ -838,11 +887,11 @@ def Isophote_Extract(IMG, results, options):
     sampling arguments for the photometry extraction.  For example, a
     start or end radius in pixels, or whether to sample geometrically or
     linearly in radius.  Geometric sampling is the default as it is
-    faster.  Once the sampling profile of semi-major axis values has been
-    chosen, the function interpolates (spline) the position angle and
-    ellipticity profiles at the requested values.  For any sampling beyond
-    the outer radius from the *Isophotal Fitting* step, a constant value
-    is used.  Within 1 PSF, a circular isophote is used.
+    faster. Matching geometric steps reuse the fitted radii, unless an
+    explicit starting radius selects a different grid, then extend outward.
+    Fitted geometry is copied at matching radii. Between fitted
+    radii, the joint shape -ln(b/a) exp(2j PA) is interpolated linearly in
+    log radius. Outside the fitted range, the nearest endpoint is held fixed.
 
     Parameters
     -----------------
@@ -857,10 +906,12 @@ def Isophote_Extract(IMG, results, options):
       units for outputted photometry. Can either be "mag" for log
       units, or "intensity" for linear units.
 
-    ap_samplegeometricscale : float, default 0.1
+    ap_samplegeometricscale : float, default ap_scale
       growth scale for isophotes when sampling for the final output
-      profile.  Used when sampling geometrically. By default, each
-      isophote is 10\% further than the last.
+      profile. Used when sampling geometrically. Inherits *ap_scale*
+      (normally 0.2) unless explicitly set. When equal to *ap_scale*,
+      reuse fitted radii and extend outward from the last fitted radius.
+      An explicit *ap_sampleinitR* not at a fitted radius retains its own grid.
 
     ap_samplelinearscale : float, default None
       growth scale (in pixels) for isophotes when sampling for the
@@ -876,19 +927,21 @@ def Isophote_Extract(IMG, results, options):
     ap_sampleinitR : float, default None
       Starting radius (in pixels) for isophote sampling from the
       image. Note that a starting radius of zero is not
-      advised. Default is 1 pixel or 1PSF, whichever is smaller.
+      advised. Default is the first fitted radius when reusing the fitted
+      grid; otherwise min(1 pixel, half the PSF FWHM).
 
     ap_sampleendR : float, default None
       End radius (in pixels) for isophote sampling from the
       image. Default is 3 times the fit radius, also see
       *ap_extractfull*.
 
-    ap_isoband_start : float, default 2
+    ap_isoband_start : float, default ap_isofit_band_start
       The noise level at which to begin sampling a band of pixels to
       compute SB instead of sampling a line of pixels near the
       isophote in units of pixel flux noise. Will never initiate band
-      averaging if the band width is less than half a pixel. Once
-      initiated, band sampling is used at all larger radii.
+      averaging if the full band width is less than one pixel. Once
+      initiated, band sampling is used at all larger radii. Inherits the
+      fitting threshold (normally 5), including disabled fitting bands.
 
     ap_isoband_start_sb : float, default None
       Surface-brightness level in mag arcsec^-2 at which to begin
@@ -896,9 +949,11 @@ def Isophote_Extract(IMG, results, options):
       near the isophote. Once initiated, band sampling is used at all
       larger radii. Overrides *ap_isoband_start* if set.
 
-    ap_isoband_width : float, default 0.025
-      The relative size of the isophote bands to sample. flux values
-      will be sampled at +- *ap_isoband_width* \*R for each radius.
+    ap_isoband_width : float, default automatic
+      Omitted: bands share harmonic-mean boundaries, giving symmetric
+      half-width R*step/(2+step) on geometric grids. Explicit values
+      set a half-width relative to R, or in pixels with *ap_isoband_fixed*.
+      Warn once per profile if requested bands overlap in radius.
 
     ap_isoband_fixed : bool, default False
       Use a fixed width for the size of the isobands, the width is set
@@ -1020,11 +1075,23 @@ def Isophote_Extract(IMG, results, options):
 
     """
     ellip_max = _resolve_ellip_max(options)
-    use_center = results["center"]
+    fit_R = np.asarray(results["fit R"])
+    sample_scale = options.get("ap_samplegeometricscale", options.get("ap_scale", 0.2))
+    reuse_fit_grid = (
+        options.get("ap_samplestyle", "geometric") == "geometric"
+        and np.isclose(sample_scale, options.get("ap_scale", 0.2), rtol=1e-10, atol=0)
+    )
+    if reuse_fit_grid and "ap_sampleinitR" in options:
+        start_index = np.argmin(np.abs(fit_R - options["ap_sampleinitR"]))
+        reuse_fit_grid = np.isclose(
+            fit_R[start_index], options["ap_sampleinitR"], rtol=1e-10, atol=0
+        )
+    else:
+        start_index = 0
 
     # Radius values to evaluate isophotes
     R = [
-        (
+        fit_R[start_index] if reuse_fit_grid else (
             options["ap_sampleinitR"]
             if "ap_sampleinitR" in options
             else min(1.0, results["psf fwhm"] / 2)
@@ -1037,7 +1104,9 @@ def Isophote_Extract(IMG, results, options):
         )
         or (options["ap_extractfull"] if "ap_extractfull" in options else False)
     ) and R[-1] < max(IMG.shape) / np.sqrt(2):
-        if "ap_samplestyle" in options and options["ap_samplestyle"] == "geometric-linear":
+        if reuse_fit_grid and R[-1] < fit_R[-1]:
+            R.append(fit_R[np.searchsorted(fit_R, R[-1], side="right")])
+        elif "ap_samplestyle" in options and options["ap_samplestyle"] == "geometric-linear":
             if len(R) > 1 and abs(R[-1] - R[-2]) >= (
                 options["ap_samplelinearscale"]
                 if "ap_samplelinearscale" in options
@@ -1052,17 +1121,7 @@ def Isophote_Extract(IMG, results, options):
                     )
                 )
             else:
-                R.append(
-                    R[-1]
-                    * (
-                        1.0
-                        + (
-                            options["ap_samplegeometricscale"]
-                            if "ap_samplegeometricscale" in options
-                            else 0.1
-                        )
-                    )
-                )
+                R.append(R[-1] * (1.0 + sample_scale))
         elif "ap_samplestyle" in options and options["ap_samplestyle"] == "linear":
             R.append(
                 R[-1]
@@ -1073,85 +1132,54 @@ def Isophote_Extract(IMG, results, options):
                 )
             )
         else:
-            R.append(
-                R[-1]
-                * (
-                    1.0
-                    + (
-                        options["ap_samplegeometricscale"]
-                        if "ap_samplegeometricscale" in options
-                        else 0.1
-                    )
-                )
-            )
+            R.append(R[-1] * (1.0 + sample_scale))
     R = np.array(R)
     logging.info("%s: R complete in range [%.1f,%.1f]" % (options["ap_name"], R[0], R[-1]))
 
-    # Interpolate profile values, when extrapolating just take last point
-    tmp_pa_s = UnivariateSpline(results["fit R"], np.sin(2 * results["fit pa"]), ext=3, s=0)(R)
-    tmp_pa_c = UnivariateSpline(results["fit R"], np.cos(2 * results["fit pa"]), ext=3, s=0)(R)
-    E = _logq_to_ellip(
-        UnivariateSpline(
-            results["fit R"], _ellip_to_logq(results["fit ellip"], ellip_max), ext=3, s=0
-        )(R),
-        ellip_max,
+    indices = np.searchsorted((fit_R[:-1] + fit_R[1:]) / 2, R)
+    # Allow rounding differences between independently constructed radius grids.
+    interpolate = (
+        (R > fit_R[0]) & (R < fit_R[-1])
+        & ~np.isclose(R, fit_R[indices], rtol=1e-10, atol=0)
     )
-    # np.arctan(tmp_pa_s / tmp_pa_c) + (np.pi * (tmp_pa_c < 0))
-    PA = _x_to_pa(((np.arctan2(tmp_pa_s, tmp_pa_c)) % (2 * np.pi)) / 2)
+    fitted_ellip = np.clip(results["fit ellip"], 0.0, ellip_max)
+    fitted_pa = np.asarray(results["fit pa"], dtype=float)
+    E = fitted_ellip[indices].copy()
+    PA = fitted_pa[indices].copy()
+    if np.any(interpolate):
+        shape = _ellipse_shape(fitted_ellip, fitted_pa)
+        trial = np.interp(np.log(R[interpolate]), np.log(fit_R), shape)
+        E[interpolate] = _logq_to_ellip(np.abs(trial), ellip_max)
+        PA[interpolate] = (np.angle(trial) / 2) % np.pi
     parameters = list({"ellip": E[i], "pa": PA[i]} for i in range(len(R)))
 
     if "fit Fmodes" in results:
         for i in range(len(R)):
             parameters[i]["m"] = results["fit Fmodes"]
-            parameters[i]["Am"] = np.array(
-                list(
-                    UnivariateSpline(
-                        results["fit R"],
-                        results["fit Fmode A%i" % results["fit Fmodes"][m]],
-                        ext=3,
-                        s=0,
-                    )(R[i])
-                    for m in range(len(results["fit Fmodes"]))
+            parameters[i]["Am"] = np.empty(len(results["fit Fmodes"]))
+            parameters[i]["Phim"] = np.empty(len(results["fit Fmodes"]))
+        for m, mode in enumerate(results["fit Fmodes"]):
+            for key, prefix in (("Am", "A"), ("Phim", "Phi")):
+                sampled = _sample_fitted_values(
+                    R, fit_R, results["fit Fmode %s%i" % (prefix, mode)], indices, interpolate
                 )
-            )
-            parameters[i]["Phim"] = np.array(
-                list(
-                    UnivariateSpline(
-                        results["fit R"],
-                        results["fit Fmode Phi%i" % results["fit Fmodes"][m]],
-                        ext=3,
-                        s=0,
-                    )(R[i])
-                    for m in range(len(results["fit Fmodes"]))
-                )
-            )
+                for i in range(len(R)):
+                    parameters[i][key][m] = sampled[i]
 
     if "fit C" in results:
-        CC = UnivariateSpline(results["fit R"], results["fit C"], ext=3, s=0)(R)
+        CC = _sample_fitted_values(R, fit_R, results["fit C"], indices, interpolate)
         for i in range(len(R)):
             parameters[i]["C"] = CC[i]
 
     # Get errors for pa and ellip
-    for i in range(len(R)):
-        if (
-            "fit ellip_err" in results
-            and (not results["fit ellip_err"] is None)
-            and "fit pa_err" in results
-            and (not results["fit pa_err"] is None)
-        ):
-            parameters[i]["ellip err"] = np.clip(
-                UnivariateSpline(results["fit R"], results["fit ellip_err"], ext=3, s=0)(R[i]),
-                a_min=1e-3,
-                a_max=None,
+    if results.get("fit ellip_err") is not None and results.get("fit pa_err") is not None:
+        for key, fit_key in (("ellip err", "fit ellip_err"), ("pa err", "fit pa_err")):
+            errors = np.clip(
+                _sample_fitted_values(R, fit_R, results[fit_key], indices, interpolate),
+                1e-3, None,
             )
-            parameters[i]["pa err"] = np.clip(
-                UnivariateSpline(results["fit R"], results["fit pa_err"], ext=3, s=0)(R[i]),
-                a_min=1e-3,
-                a_max=None,
-            )
-        else:
-            parameters[i]["ellip err"] = 0.0
-            parameters[i]["pa err"] = 0.0
+            for i in range(len(R)):
+                parameters[i][key] = errors[i]
 
     return IMG, _Generate_Profile(IMG, results, R, parameters, options)
 

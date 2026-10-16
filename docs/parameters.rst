@@ -389,7 +389,7 @@ Use a fixed width for the size of the isobands, the width is set
 by *ap_isoband_width* which now has units of pixels, the default
 is 0.5 such that the full band has a width of 1 pixel.
 
-ap_isoband_start (float, default 2)
+ap_isoband_start (float, default ap_isofit_band_start)
 ----------------------------------------------------------------------
 
 **Referencing Methods**
@@ -402,8 +402,10 @@ ap_isoband_start (float, default 2)
 The noise level at which to begin sampling a band of pixels to
 compute SB instead of sampling a line of pixels near the
 isophote in units of pixel flux noise. Will never initiate band
-averaging if the band width is less than half a pixel. Once initiated,
-band sampling is used at all larger radii.
+averaging if the full band width is less than one pixel. Once initiated,
+band sampling is used at all larger radii. Unless explicitly set, inherits
+the fitting threshold (normally 5); a disabled fitting threshold also disables
+automatic extraction bands. ``ap_isoband_start_sb`` takes precedence.
 
 ap_isoband_start_sb (float, default None)
 ----------------------------------------------------------------------
@@ -420,7 +422,7 @@ sampling a band of pixels instead of sampling a line of pixels
 near the isophote. Once initiated, band sampling is used at all larger
 radii. Overrides *ap_isoband_start* if set.
 
-ap_isoband_width (float, default 0.025)
+ap_isoband_width (float, default automatic)
 ----------------------------------------------------------------------
 
 **Referencing Methods**
@@ -430,8 +432,14 @@ ap_isoband_width (float, default 0.025)
 
 **Description**
 
-The relative size of the isophote bands to sample. flux values
-will be sampled at +- *ap_isoband_width* \*R for each radius.
+When omitted, bands share harmonic-mean boundaries, as in fitting. On a
+geometric grid this gives symmetric half-width ``R * step / (2 + step)``;
+irregular grids retain shared boundaries but may have asymmetric bands.
+Endpoint edges are reflected about the endpoint radii. For constant geometry,
+shared-edge pixel centers belong to the outer band. An explicit value sets the half-width to
+``ap_isoband_width * R``, or to that many pixels with ``ap_isoband_fixed=True``
+(default half-width 0.5 pixels in fixed mode). A warning is logged once per
+profile if consecutive requested bands overlap in radius.
 
 ap_isoclip (bool, default False)
 ----------------------------------------------------------------------
@@ -490,8 +498,9 @@ ap_isofit_band_start (float, default 5)
 
 Use mean-sector bands below this initial background-subtracted median intensity
 divided by background RMS. This choice stays fixed during
-fitting. Bands span log midpoints between fitting radii; endpoint widths use
-the adjacent spacing. Polar-angle harmonics use unmasked pixels and propagated
+fitting. Bands use the same harmonic-mean boundaries as default extraction,
+giving symmetric half-width ``R * step / (2 + step)`` on geometric grids.
+Polar-angle harmonics use unmasked pixels and propagated
 mean errors. Returned ``fit band lower R`` and ``fit band upper R`` give the
 radial support (equal to ``fit R`` for lines). Only ordinary harmonic fits
 support bands. None retains line sampling; sparse initialization stays on lines.
@@ -951,7 +960,7 @@ End radius (in pixels) for isophote sampling from the
 image. Default is 3 times the fit radius, also see
 *ap_extractfull*.
 
-ap_samplegeometricscale (float, default 0.1)
+ap_samplegeometricscale (float, default ap_scale)
 ----------------------------------------------------------------------
 
 **Referencing Methods**
@@ -960,9 +969,13 @@ ap_samplegeometricscale (float, default 0.1)
 
 **Description**
 
-growth scale for isophotes when sampling for the final output
-profile.  Used when sampling geometrically. By default, each
-isophote is 10\% further than the last.
+Growth scale for geometric sampling of the final profile. Unless explicitly
+set, inherits ``ap_scale`` (normally 0.2).
+When equal to ``ap_scale``, reuse fitted radii and extend outward from the
+last fitted radius. An explicit ``ap_sampleinitR`` not at a fitted radius retains
+its own grid. Geometry is copied at matching radii; between them, interpolate
+``-ln(b/a) exp(2j PA)`` linearly in log radius. Hold endpoint geometry outside
+the fitted range.
 
 ap_sampleinitR (float, default None)
 ----------------------------------------------------------------------
@@ -975,7 +988,8 @@ ap_sampleinitR (float, default None)
 
 Starting radius (in pixels) for isophote sampling from the
 image. Note that a starting radius of zero is not
-advised. Default is 1 pixel or 1PSF, whichever is smaller.
+advised. Default is the first fitted radius when reusing the fitted grid;
+otherwise min(1 pixel, half the PSF FWHM).
 
 ap_samplelinearscale (float, default None)
 ----------------------------------------------------------------------

@@ -15,6 +15,7 @@ import logging
 from ..autoprofutils.SharedFunctions import (
     _iso_extract_with_interp_cutoff,
     _iso_interpolate_radius,
+    _isophote_band_limits,
     _has_enough_isophote_coverage,
     _interpolate_invalid_isophote_samples,
     _validate_interpolate_method,
@@ -572,11 +573,8 @@ def _isofit_variance(dat, noise, options):
 
 
 def _set_isofit_bands(dat, radii, parameters, center, noise, variance, mask, threshold):
-    """Fix band membership from initial brightness and log-midpoint boundaries."""
-    log_r = np.log(radii)
-    edges = np.exp(np.r_[log_r[0] - (log_r[1] - log_r[0]) / 2,
-                         (log_r[:-1] + log_r[1:]) / 2,
-                         log_r[-1] + (log_r[-1] - log_r[-2]) / 2])
+    """Fix band membership from initial brightness and harmonic-mean boundaries."""
+    lower, upper = _isophote_band_limits(radii)
     invalid = ~np.isfinite(variance) | (variance <= 0)
     if mask is not None:
         invalid |= mask
@@ -587,7 +585,7 @@ def _set_isofit_bands(dat, radii, parameters, center, noise, variance, mask, thr
         )
         if np.any(choose) and np.median(flux[choose]) < threshold * noise:
             # Relative boundaries also move with the shifted uncertainty rings.
-            parameters[i]["_isoband"] = (edges[i] / radius, edges[i + 1] / radius)
+            parameters[i]["_isoband"] = (lower[i] / radius, upper[i] / radius)
 
 
 def _harmonic_band_operator(dat, radius, params, center, variance, mask):
@@ -1066,7 +1064,8 @@ def Isophote_Fit_FFT_Robust(IMG, results, options):
 
     ap_isofit_band_start : float, default 5 for harmonic fitting, None otherwise
       Enable mean-sector bands below this initial median intensity / background
-      RMS. Band edges follow log midpoints of the fitting grid. Only
+      RMS. Shared harmonic-mean edges give half-width R*step/(2+step) on
+      geometric grids, as in default extraction. Only
       ordinary harmonic fits support this option; None retains line sampling.
 
     ap_isofit_iterlimitmax : int, default 1000
@@ -1508,6 +1507,7 @@ def Isophote_Fit_FFT_Robust(IMG, results, options):
         "fit R": sample_radii,
         "fit ellip_err": ellip_err,
         "fit pa_err": pa_err,
+        "fit band start": band_start,
         "auxfile fitlimit": "fit limit semi-major axis: %.2f pix" % sample_radii[-1],
     }
     if band_start is not None:

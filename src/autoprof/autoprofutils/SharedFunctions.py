@@ -744,6 +744,14 @@ def _interpolate_Lanczos(dat, X, Y, scale, mask=None):
     return flux, valid
 
 
+def _isophote_band_limits(radii):
+    """Shared harmonic-mean edges for a grid of at least two positive radii."""
+    radii = np.asarray(radii, dtype=float)
+    edges = 2 * radii[:-1] * radii[1:] / (radii[:-1] + radii[1:])
+    # Reflect endpoint edges; geometric grids then have half-width R*step/(2+step).
+    return np.r_[2 * radii[0] - edges[0], edges], np.r_[edges, 2 * radii[-1] - edges[-1]]
+
+
 def _iso_between(
     IMG,
     sma_low,
@@ -755,6 +763,7 @@ def _iso_between(
     sigmaclip=False,
     sclip_iterations=10,
     sclip_nsigma=5,
+    include_inner=False,
 ):
 
     if not "m" in PARAMS:
@@ -785,7 +794,9 @@ def _iso_between(
         theta - PARAMS["pa"], PARAMS["ellip"], 2 if PARAMS["C"] is None else PARAMS["C"]
     )
     RR /= SuperEllipse_Rscale * Fmode_Rscale
-    rselect = np.logical_and(RR < sma_high, RR > sma_low)
+    # Half-open bands assign a shared-edge pixel to exactly one band.
+    inside_lower = RR >= sma_low if include_inner else RR > sma_low
+    rselect = np.logical_and(RR < sma_high, inside_lower)
     fluxes = IMG[ranges[1][0] : ranges[1][1], ranges[0][0] : ranges[0][1]][rselect]
     theta_values = theta[rselect]
     CHOOSE = np.isfinite(fluxes)
