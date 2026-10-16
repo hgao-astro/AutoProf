@@ -1174,10 +1174,18 @@ def Isophote_Extract(IMG, results, options):
     # Get errors for pa and ellip
     if results.get("fit ellip_err") is not None and results.get("fit pa_err") is not None:
         for key, fit_key in (("ellip err", "fit ellip_err"), ("pa err", "fit pa_err")):
-            errors = np.clip(
-                _sample_fitted_values(R, fit_R, results[fit_key], indices, interpolate),
-                1e-3, None,
-            )
+            if results.get("fit error method") == "harmonic covariance":
+                errors = np.asarray(results[fit_key], dtype=float)[indices].copy()
+                # Local interpolation keeps an undefined error from poisoning the whole spline.
+                if np.any(interpolate):
+                    errors[interpolate] = np.interp(
+                        np.log(R[interpolate]), np.log(fit_R), results[fit_key]
+                    )
+            else:
+                errors = np.clip(
+                    _sample_fitted_values(R, fit_R, results[fit_key], indices, interpolate),
+                    1e-3, None,
+                )
             for i in range(len(R)):
                 parameters[i][key] = errors[i]
 

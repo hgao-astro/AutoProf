@@ -876,6 +876,63 @@ def _check_ellipse_directions(parameters, active_mask, loss, ellip_max, step):
     return changed, accepted_steps
 
 
+def _harmonic_geometry_errors(dat, R, parameters, center, variance, mask, ellip_max):
+    """Propagate harmonic covariance at fixed radii, without regularization.
+
+    Finite log-q shape steps resolve whole-pixel band membership. NaN denotes
+    an unsupported response, a boundary-limited estimate, or undefined PA.
+    These local linear errors do not include systematic fitting offsets.
+    """
+    ellip_err = np.full(len(R), np.nan)
+    pa_err = np.full(len(R), np.nan)
+    step = 0.03
+    logq_max = -np.log1p(-ellip_max)
+    for i, (radius, params) in enumerate(zip(R, parameters)):
+        sampled = _harmonic_ring_operator(dat, radius, params, center, variance, mask)
+        if sampled is None:
+            continue
+        shape = _ellipse_shape(params["ellip"], params["pa"])
+        z = np.array([shape.real, shape.imag])
+        u = np.linalg.norm(z)
+        if u <= 1e-10:
+            continue  # The transformation to ellipticity/PA is singular at a circle.
+        columns = []
+        for axis in np.eye(2):
+            harmonics = []
+            for sign in (-1, 1):
+                trial = z + sign * step * axis
+                magnitude = np.linalg.norm(trial)
+                if magnitude >= logq_max:
+                    break
+                trial_params = dict(params, ellip=-np.expm1(-magnitude),
+                                    pa=(np.arctan2(trial[1], trial[0]) / 2) % np.pi)
+                perturbed = _harmonic_ring_operator(
+                    dat, radius, trial_params, center, variance, mask
+                )
+                if perturbed is None:
+                    break
+                pixels, operator, _ = perturbed
+                harmonics.append(operator @ dat.ravel()[pixels])
+            if len(harmonics) != 2:
+                break
+            columns.append((harmonics[1] - harmonics[0]) / (2 * step))
+        if len(columns) != 2:
+            continue
+        jacobian = np.column_stack(columns)
+        information = jacobian.T @ np.linalg.solve(sampled[2], jacobian)
+        eigen = np.linalg.eigvalsh(information)
+        if not np.all(np.isfinite(eigen)) or eigen[0] <= 1e-10 * max(eigen[-1], 0.0):
+            continue
+        covariance = np.linalg.inv(information)
+        transform = np.array([np.exp(-u) * z / u, 0.5 * np.array([-z[1], z[0]]) / u**2])
+        errors = np.sqrt(np.maximum(np.diag(transform @ covariance @ transform.T), 0.0))
+        ellip_err[i] = errors[0]
+        # A 68% joint shape region containing a circle cannot constrain PA.
+        if z @ information @ z > 2.30:
+            pa_err[i] = errors[1]
+    return ellip_err, pa_err
+
+
 def _FFT_Robust_Errors(
     dat,
     R,
@@ -892,6 +949,8 @@ def _FFT_Robust_Errors(
     ellip_max=_DEFAULT_ELLIP_MAX,
     variance=None,
 ):
+    if variance is not None:
+        return _harmonic_geometry_errors(dat, R, PARAMS, C, variance, mask, ellip_max)
 
     PARAMS = [dict(p, ellip=np.clip(p["ellip"], 0.0, ellip_max)) for p in PARAMS]
     PA_err = np.zeros(len(R))
@@ -988,11 +1047,11 @@ def Isophote_Fit_FFT_Robust(IMG, results, options):
     directional refinement. Other interpolation methods, custom loss modes,
     superellipses and Fourier shapes retain the clipped FFT objective.
 
-    An uncertainty for each ellipticity and position angle value is
-    determined by repeatedly re-optimizing each ellipse with slight
-    adjustments to it's semi-major axis length (+- 5%). The standard
-    deviation of the PA/ellipticity after repeated fitting gives the
-    uncertainty.
+    Harmonic fits propagate the pixel-noise covariance into ellipticity and
+    PA at fixed radius, using 0.03 steps in joint log-q shape coordinates.
+    These approximate data-only errors exclude regularization and systematic
+    offsets. Unsupported estimates and PA consistent with circularity are NaN.
+    Other fitting modes retain the scatter from refits at radii shifted by 5%.
 
     Parameters
     -----------------
@@ -1510,6 +1569,13 @@ def Isophote_Fit_FFT_Robust(IMG, results, options):
         "fit band start": band_start,
         "auxfile fitlimit": "fit limit semi-major axis: %.2f pix" % sample_radii[-1],
     }
+    if use_harmonic:
+        res["fit error method"] = "harmonic covariance"
+        res["auxfile fit uncertainty"] = (
+            "geometry uncertainties: fixed-radius harmonic covariance (data only); "
+            "unavailable ellipticity/PA errors: %i/%i"
+            % (np.sum(~np.isfinite(ellip_err)), np.sum(~np.isfinite(pa_err)))
+        )
     if band_start is not None:
         limits = np.array([p.get("_isoband", (1.0, 1.0)) for p in parameters]) * sample_radii[:, None]
         res["fit band lower R"], res["fit band upper R"] = limits.T
