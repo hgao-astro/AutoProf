@@ -1640,14 +1640,22 @@ def Isophote_Fit_Forced(IMG, results, options):
     with open(options["ap_forcing_profile"], "r") as f:
         raw = f.readlines()
         for i, l in enumerate(raw):
-            if l[0] != "#":
+            if l.strip() and not l.lstrip().startswith("#"):
                 readfrom = i
                 break
         header = list(h.strip() for h in raw[readfrom].split(","))
-        force = dict((h, []) for h in header)
-        for l in raw[readfrom + 2 :]:
-            for d, h in zip(l.split(","), header):
-                force[h].append(float(d.strip()))
+        # Only geometry columns are numeric inputs; sampling labels are metadata.
+        force = {h: [] for h in header if h in ("R", "pa", "ellip", "pa_e", "ellip_e")}
+        for l in raw[readfrom + 1 :]:
+            if not l.strip() or l.lstrip().startswith("#"):
+                continue
+            row = dict(zip(header, l.split(",")))
+            try:
+                float(row["R"])
+            except ValueError:
+                continue  # Skip an uncommented units row.
+            for h in force:
+                force[h].append(float(row[h]))
 
     force["pa"] = PA_shift_convention(np.array(force["pa"]), deg=True)
 
