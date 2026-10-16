@@ -520,6 +520,8 @@ def Isophote_Initialize(IMG, results, options):
         r = circ_ellipse_radii[-1]
         while r < (len(IMG) / 2):
             r *= 1 + 0.2
+            if r > len(IMG) / 2:
+                break
             isovals = _extract_init_fft_samples(
                 dat,
                 r,
@@ -826,6 +828,8 @@ def Isophote_Initialize_mean(IMG, results, options):
     r = circ_ellipse_radii[-1]
     while r < (len(IMG) / 2):
         r *= 1 + 0.2
+        if r > len(IMG) / 2:
+            break
         isovals = _extract_init_fft_samples(
             dat,
             r,

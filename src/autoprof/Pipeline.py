@@ -286,7 +286,7 @@ class Isophote_Pipeline(object):
                     counts[s] = 1.0
         if len(timers) == 0:
             logging.error("All images failed to process!")
-            return
+            return res
         for s in timers:
             timers[s] /= counts[s]
             logging.info("%s took %.3f seconds on average" % (s, timers[s]))

@@ -38,4 +38,8 @@ def run_from_terminal():
 
     PIPELINE = Pipeline.Isophote_Pipeline(loggername=logfile)
 
-    PIPELINE.Process_ConfigFile(config_file)
+    result = PIPELINE.Process_ConfigFile(config_file)
+    # Successful runs return timing dictionaries, which are not exit codes.
+    if isinstance(result, list):
+        return int(any(item == 1 for item in result))
+    return int(result == 1)

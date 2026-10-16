@@ -140,7 +140,7 @@ ap_extractfull (bool, default False)
 **Description**
 
 Tells AutoProf to extend the isophotal solution to the edge of
-the image. Will be overridden by *ap_truncate_evaluation*.
+the image. Limited by *ap_sampleendR* and *ap_truncate_evaluation*.
 
 ap_fit_limit (float, default 1)
 ----------------------------------------------------------------------
@@ -953,12 +953,12 @@ ap_sampleendR (float, default None)
 **Referencing Methods**
 
 - :func:`~autoprof.pipeline_steps.Isophote_Extract.Isophote_Extract`
+- :func:`~autoprof.pipeline_steps.Isophote_Extract.Isophote_Extract_Forced`
 
 **Description**
 
-End radius (in pixels) for isophote sampling from the
-image. Default is 3 times the fit radius, also see
-*ap_extractfull*.
+Maximum sampling radius in pixels for normal and forced extraction.
+Overrides *ap_extractfull* and the default three-times-fit-radius limit.
 
 ap_samplegeometricscale (float, default ap_scale)
 ----------------------------------------------------------------------

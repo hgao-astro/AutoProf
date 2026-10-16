@@ -120,7 +120,10 @@ def Axial_Profiles(IMG, results, options):
                 if "ap_samplegeometricscale" in options
                 else 0.1
             )
-        R.append(R[-1] + max(1, step))
+        nextR = R[-1] + max(1, step)
+        if nextR > Rproflim:
+            break
+        R.append(nextR)
 
     sb = {}
     sbE = {}

@@ -427,7 +427,7 @@ def _Generate_Profile(IMG, results, R, parameters, options, forced_sampling_meth
         sample_labels.append(sampling_method)
         if fluxunits == "intensity":
             sb.append(medflux / options["ap_pixscale"] ** 2)
-            sbE.append(scatflux / np.sqrt(len(isovals[0])))
+            sbE.append(scatflux / (np.sqrt(len(isovals[0])) * options["ap_pixscale"] ** 2))
             cogdirect.append(isotot)
         else:
             sb.append(
@@ -463,7 +463,7 @@ def _Generate_Profile(IMG, results, R, parameters, options, forced_sampling_meth
     )
     for i in np.flatnonzero(np.asarray(pixels[:end_prof]) == 1):
         if fluxunits == "intensity":
-            sbE[i] = scatfluxes[i]
+            sbE[i] = scatfluxes[i] / options["ap_pixscale"] ** 2
         elif medfluxes[i] > 0:
             sbE[i] = 2.5 * scatfluxes[i] / (medfluxes[i] * np.log(10))
 
@@ -669,6 +669,9 @@ def Isophote_Extract_Forced(IMG, results, options):
       choose lanczos, bicubic, bilinear, nearest-neighbor, or band sampling
       for each forced isophote.
 
+    ap_sampleendR : float, default None
+      Keep only forcing-profile radii at or below this limit in pixels.
+
     ap_isoband_start : float, default ap_isofit_band_start
       The noise level at which to begin sampling a band of pixels to
       compute SB instead of sampling a line of pixels near the
@@ -825,6 +828,15 @@ def Isophote_Extract_Forced(IMG, results, options):
                 else:
                     force[h].append(float(d.strip()))
 
+    R = np.array(force["R"]) / options["ap_pixscale"]
+    sample_end = options.get("ap_sampleendR")
+    if sample_end is not None:
+        keep = R <= sample_end
+        R = R[keep]
+        if len(R) == 0:
+            raise ValueError("ap_sampleendR leaves no extraction radii.")
+        force = {h: np.asarray(values)[keep] for h, values in force.items()}
+
     force["pa"] = PA_shift_convention(np.array(force["pa"]), deg=True) * np.pi / 180
 
     parameters = list(
@@ -861,7 +873,7 @@ def Isophote_Extract_Forced(IMG, results, options):
     return IMG, _Generate_Profile(
         IMG,
         results,
-        np.array(force["R"]) / options["ap_pixscale"],
+        R,
         parameters,
         options,
         forced_sampling_methods=forced_sampling_methods,
@@ -931,9 +943,8 @@ def Isophote_Extract(IMG, results, options):
       grid; otherwise min(1 pixel, half the PSF FWHM).
 
     ap_sampleendR : float, default None
-      End radius (in pixels) for isophote sampling from the
-      image. Default is 3 times the fit radius, also see
-      *ap_extractfull*.
+      Maximum sampling radius in pixels, overriding *ap_extractfull* and
+      the default three-times-fit-radius limit.
 
     ap_isoband_start : float, default ap_isofit_band_start
       The noise level at which to begin sampling a band of pixels to
@@ -967,7 +978,7 @@ def Isophote_Extract(IMG, results, options):
 
     ap_extractfull : bool, default False
       Tells AutoProf to extend the isophotal solution to the edge of
-      the image. Will be overridden by *ap_truncate_evaluation*.
+      the image. Limited by *ap_sampleendR* and *ap_truncate_evaluation*.
 
     ap_iso_interpolate_start : float, default 5
       Use image interpolation for isophotes with semi-major axis
@@ -1097,13 +1108,12 @@ def Isophote_Extract(IMG, results, options):
             else min(1.0, results["psf fwhm"] / 2)
         )
     ]
-    while (
-        (
-            (R[-1] < options["ap_sampleendR"] if "ap_sampleendR" in options else True)
-            and R[-1] < 3 * results["fit R"][-1]
-        )
-        or (options["ap_extractfull"] if "ap_extractfull" in options else False)
-    ) and R[-1] < max(IMG.shape) / np.sqrt(2):
+    sample_end = options.get("ap_sampleendR")
+    endR = sample_end if sample_end is not None else (
+        np.inf if options.get("ap_extractfull", False) else 3 * fit_R[-1]
+    )
+    endR = min(endR, max(IMG.shape) / np.sqrt(2))
+    while R[-1] < endR:
         if reuse_fit_grid and R[-1] < fit_R[-1]:
             R.append(fit_R[np.searchsorted(fit_R, R[-1], side="right")])
         elif "ap_samplestyle" in options and options["ap_samplestyle"] == "geometric-linear":
@@ -1134,6 +1144,9 @@ def Isophote_Extract(IMG, results, options):
         else:
             R.append(R[-1] * (1.0 + sample_scale))
     R = np.array(R)
+    R = R[R <= endR]
+    if len(R) == 0:
+        raise ValueError("Extraction radius limit leaves no sampling radii.")
     logging.info("%s: R complete in range [%.1f,%.1f]" % (options["ap_name"], R[0], R[-1]))
 
     indices = np.searchsorted((fit_R[:-1] + fit_R[1:]) / 2, R)
@@ -1403,7 +1416,7 @@ def Isophote_Extract_Photutils(IMG, results, options):
             SBprof_data["I"].append(
                 medflux / options["ap_pixscale"] ** 2
             )
-            SBprof_data["I_e"].append(isolist.int_err[i])
+            SBprof_data["I_e"].append(isolist.int_err[i] / options["ap_pixscale"] ** 2)
             SBprof_data["totflux"].append(isolist.tflux_e[i])
             SBprof_data["totflux_e"].append(
                 _finite_divide(isolist.rms[i], np.sqrt(isolist.npix_e[i]))
