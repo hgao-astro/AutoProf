@@ -103,6 +103,21 @@ Center - Of Mass
 
 Wrapper for basic method which finds the flux centroid of an image to determine the center.
 
+Isophote Initialize - Sparse
+----------------------------------------------------------------------
+
+**pipeline labels: 'isophoteinit' (default), 'isophoteinit sparse'**
+
+:func:`~autoprof.pipeline_steps.Isophote_Initialize.Isophote_Initialize_Sparse`
+
+Fits a few isophotes outward from three PSF FWHM until the fitted median
+brightness reaches ``ap_isoinit_limit`` (default 3 background RMS), or to
+an explicit ``ap_isoinit_R_set``.
+Masked flux moments seed the first fit; each fit seeds the next. The native
+fitters interpolate these anchors into an initial geometry profile. Uses the
+bilinear harmonic data loss; regularization starts in the subsequent fitter.
+The previous single-radius initializer remains available as ``isophoteinit legacy``.
+
 Isophote Initialize - Mean
 ----------------------------------------------------------------------
 

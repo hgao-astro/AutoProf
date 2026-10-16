@@ -142,7 +142,7 @@ ap_extractfull (bool, default False)
 Tells AutoProf to extend the isophotal solution to the edge of
 the image. Will be overridden by *ap_truncate_evaluation*.
 
-ap_fit_limit (float, default 2)
+ap_fit_limit (float, default 1)
 ----------------------------------------------------------------------
 
 **Referencing Methods**
@@ -155,7 +155,10 @@ ap_fit_limit (float, default 2)
 
 **Description**
 
-noise level out to which to extend the fit in units of pixel background noise level. Default is 2, smaller values will end fitting further out in the galaxy image.
+Brightness limit in units of pixel background RMS; smaller values extend fitting
+farther out. Grid selection checks from the innermost radius and excludes the
+first below-threshold radius, even inside the outermost initialization anchor.
+This check uses the initial geometry, before optimization.
 
 ap_fluxunits (str, default "mag")
 ----------------------------------------------------------------------
@@ -476,6 +479,23 @@ Number of sigma above median to apply clipping. All values above
 (median + *ap_isoclip_nsigma* x sigma) are removed from the
 isophote.
 
+ap_isofit_band_start (float, default 5)
+----------------------------------------------------------------------
+
+**Referencing Methods**
+
+- :func:`~autoprof.pipeline_steps.Isophote_Fit.Isophote_Fit_FFT_Robust`
+
+**Description**
+
+Use mean-sector bands below this initial background-subtracted median intensity
+divided by background RMS. This choice stays fixed during
+fitting. Bands span log midpoints between fitting radii; endpoint widths use
+the adjacent spacing. Polar-angle harmonics use unmasked pixels and propagated
+mean errors. Returned ``fit band lower R`` and ``fit band upper R`` give the
+radial support (equal to ``fit R`` for lines). Only ordinary harmonic fits
+support bands. None retains line sampling; sparse initialization stays on lines.
+
 ap_isofit_fitcoefs (tuple, default None)
 ----------------------------------------------------------------------
 
@@ -680,10 +700,27 @@ ap_isoinit_R_set (float, default None)
 **Referencing Methods**
 
 - :func:`~autoprof.pipeline_steps.Isophote_Initialize.Isophote_Initialize`
+- :func:`~autoprof.pipeline_steps.Isophote_Initialize.Isophote_Initialize_Sparse`
 
 **Description**
 
 User set initial semi-major axis length, will override the calculation.
+For sparse initialization, this is the exact outermost anchor and overrides
+``ap_isoinit_limit``.
+
+ap_isoinit_limit (float, default 3)
+----------------------------------------------------------------------
+
+**Referencing Methods**
+
+- :func:`~autoprof.pipeline_steps.Isophote_Initialize.Isophote_Initialize_Sparse`
+
+**Description**
+
+Stop sparse initialization when the median sky-subtracted intensity along
+the fitted ellipse falls below this many background RMS. Must be positive.
+The previous anchor seeds each fit; the threshold crossing is refined in radius.
+Independent of ``ap_fit_limit``; the legacy default initializer still uses that value plus one.
 
 ap_isoinit_ellip_set (float, default None)
 ----------------------------------------------------------------------
@@ -695,6 +732,7 @@ ap_isoinit_ellip_set (float, default None)
 **Description**
 
 User set initial ellipticity (1 - b/a), will override the calculation.
+For sparse initialization, this changes only the first anchor's starting guess.
 Clipped to [0, ap_iso_ellip_max]; see *ap_iso_ellip_max* for the common bound used
 throughout native fitting and fitted-profile interpolation.
 
@@ -710,6 +748,7 @@ ap_isoinit_interpolate_method (string, default 'bilinear')
 
 Select method for flux interpolation while initializing
 isophotes. Options are 'lanczos', 'bicubic', and 'bilinear'.
+Sparse initialization requires 'bilinear'; the legacy and mean methods support all three.
 
 ap_isoinit_pa_set (float, default None)
 ----------------------------------------------------------------------
@@ -721,6 +760,7 @@ ap_isoinit_pa_set (float, default None)
 **Description**
 
 User set initial position angle in degrees, will override the calculation.
+For sparse initialization, this changes only the first anchor's starting guess.
 
 ap_mask_file (string, default None)
 ----------------------------------------------------------------------
@@ -890,8 +930,8 @@ It is symmetric and invariant under a common rotation. A circular isophote
 has z=0, so its PA does not contribute to the penalty.
 
 Ordinary bilinear ellipse fits minimize Q2 + scale * penalty, with default 4.
-Q2 is the covariance-normalized second harmonic, using only the fitted ring
-for sampling and coverage. Shared bilinear pixels are accounted for; there
+Q2 is the covariance-normalized second harmonic in polar angle, using the fitted
+ring or optional band for sampling and coverage. Shared bilinear pixels are accounted for; there
 is no gradient-significance gate. Other interpolation methods,
 custom loss modes, superellipse/Fourier shapes, and the mean fitter retain
 their multiplicative objective and default 1. Previously tuned strengths may

@@ -15,6 +15,7 @@ from ..autoprofutils.SharedFunctions import (
     _resolve_ellip_max,
     _ellip_to_logq,
     _perturb_ellip,
+    _perturb_ellipse,
     _x_to_pa,
     _inv_x_to_pa,
     LSBImage,
@@ -37,8 +38,10 @@ from astropy.visualization.mpl_normalize import ImageNormalize
 import matplotlib.pyplot as plt
 from matplotlib.patches import Ellipse
 from time import time
+from .Isophote_Fit import _harmonic_shape_loss, _isofit_variance
 
-__all__ = ("Isophote_Init_Forced", "Isophote_Initialize", "Isophote_Initialize_mean")
+__all__ = ("Isophote_Init_Forced", "Isophote_Initialize", "Isophote_Initialize_mean",
+           "Isophote_Initialize_Sparse")
 
 
 def _isophote_flux(isovals):
@@ -128,6 +131,174 @@ def _select_init_radius(test_ellip, loss_func, dat, radius, phase, center, noise
         if np.any(np.isfinite(test_f2)):
             return test_radius, test_f2
     return radius, test_f2
+
+
+def _flux_moment_shape(dat, center, radius, mask, ellip_max):
+    """Flux moments about the supplied center, within a circular aperture."""
+    y, x = np.ogrid[:dat.shape[0], :dat.shape[1]]
+    x, y = x - center["x"], y - center["y"]
+    good = np.isfinite(dat) & (x * x + y * y <= radius * radius)
+    if mask is not None:
+        good &= ~mask
+    # Keep signed sky-subtracted flux; clipping would add a positive sky pedestal.
+    flux = np.where(good, dat, 0.0)
+    total = np.sum(flux)
+    if not np.isfinite(total) or total <= 0:
+        raise ValueError("Sparse initialization requires positive unmasked aperture flux.")
+    moments = np.array([[np.sum(flux * x * x), np.sum(flux * x * y)],
+                        [np.sum(flux * x * y), np.sum(flux * y * y)]]) / total
+    values, vectors = np.linalg.eigh(moments)
+    if values[0] <= 0:
+        logging.warning("Nonpositive flux moments; starting sparse initialization from a circle.")
+        return 0.0, 0.0
+    return (float(np.clip(1 - np.sqrt(values[0] / values[1]), 0.0, ellip_max)),
+            float(np.arctan2(vectors[1, 1], vectors[0, 1]) % np.pi))
+
+
+def _fit_sparse_anchor(dat, radius, guess, center, variance, mask, noise, ellip_max):
+    """Fit one independent ellipse and measure its median brightness."""
+    def loss(offset):
+        e, p = _perturb_ellipse(*guess, offset, ellip_max)
+        return _harmonic_shape_loss(
+            dat, [radius], [{"ellip": e, "pa": p}], 0,
+            center, variance, mask, 0.0, None,
+        )
+
+    fit = minimize(loss, np.zeros(2), method="Nelder-Mead", options={
+        "initial_simplex": np.array([[0., 0.], [.15, 0.], [0., .15]]),
+        "xatol": 1e-4, "fatol": 1e-8, "maxiter": 300,
+    })
+    initial_loss = loss(np.zeros(2))
+    if np.isfinite(fit.fun) and fit.fun < initial_loss:
+        guess = _perturb_ellipse(*guess, fit.x, ellip_max)
+    elif not np.isfinite(initial_loss):
+        return None
+    flux, theta, choose, _ = _iso_extract_with_interp_cutoff(
+        dat, radius, {"ellip": guess[0], "pa": guess[1]}, center,
+        more=True, mask=mask, return_choose=True, interp_method="bilinear",
+    )
+    if not _has_enough_isophote_coverage(theta, choose):
+        return None
+    if not fit.success:
+        logging.warning("Sparse initialization did not converge at %.2f pixels.", radius)
+    return {"radius": radius, "ellip": guess[0], "pa": guess[1],
+            "level": np.median(flux[choose]) / noise}
+
+
+def Isophote_Initialize_Sparse(IMG, results, options):
+    """Initialize a radial geometry profile from sparse independent isophotes.
+
+    ``ap_isoinit_R_set`` is the outermost anchor, fitted at exactly that
+    radius. Otherwise, stop when the fitted ellipse's median intensity /
+    background RMS falls below ``ap_isoinit_limit`` (default 3). Anchors
+    start at three PSF FWHM, double in radius, and refine the threshold
+    crossing to within 2.5% in radius (at most six bisections).
+
+    Masked flux moments give the first anchor's guess. A circular scan to
+    three background RMS sets only the moment aperture, unless an explicit
+    outer radius is supplied. Each subsequent anchor starts from
+    the previous fit. Anchors minimize the bilinear harmonic Q2 data loss
+    without regularization or angular gap filling. ``ap_isofit_rms`` and
+    ``ap_isofit_gain`` follow the ordinary fitter's noise conventions.
+    Explicit ellipticity/PA overrides change the starting guess only.
+
+    Returns scalar ``init ellip``, ``init pa``, ``init R`` and the arrays
+    ``init profile R``, ``init profile ellip``, ``init profile pa``. Native
+    FFT/fixed fitters interpolate the profile in joint shape/log radius,
+    holding its endpoints outside the anchor range. Requires background,
+    background noise, center and PSF FWHM; respects the optional mask.
+    """
+    ellip_max = _resolve_ellip_max(options)
+    if options.get("ap_isoinit_interpolate_method", "bilinear") != "bilinear":
+        raise ValueError("Sparse harmonic initialization requires bilinear interpolation.")
+    dat = IMG - results["background"]
+    variance = _isofit_variance(dat, results["background noise"], options)
+    mask = ~np.isfinite(variance) | (variance <= 0)
+    if results.get("mask") is not None:
+        mask |= results["mask"]
+    inner = max(1.0, 3 * results["psf fwhm"])
+    fixed_outer = "ap_isoinit_R_set" in options
+    if fixed_outer:
+        max_radius = float(options["ap_isoinit_R_set"])
+        if not np.isfinite(max_radius) or max_radius <= 0:
+            raise ValueError("ap_isoinit_R_set must be finite and positive.")
+        moment_radius = max_radius
+    else:
+        limit = options.get("ap_isoinit_limit", 3.0)
+        if not np.isfinite(limit) or limit <= 0:
+            raise ValueError("ap_isoinit_limit must be finite and positive.")
+        max_radius = max(IMG.shape) / 2
+        moment_radius = None
+        radius = 1.0
+        while radius < max_radius:
+            radius = min(radius * 1.2, max_radius)
+            flux, theta, choose, _ = _iso_extract_with_interp_cutoff(
+                dat, radius, {"ellip": 0.0, "pa": 0.0}, results["center"],
+                more=True, mask=mask, return_choose=True, interp_method="bilinear",
+            )
+            if not _has_enough_isophote_coverage(theta, choose):
+                continue
+            moment_radius = radius
+            if radius >= inner and np.quantile(flux[choose], 0.8) < 3 * results["background noise"]:
+                break
+        if moment_radius is None:
+            raise ValueError("Sparse initialization found no usable circular samples.")
+    ellip, pa = _flux_moment_shape(dat, results["center"], moment_radius, mask, ellip_max)
+    if "ap_isoinit_ellip_set" in options:
+        ellip = float(np.clip(options["ap_isoinit_ellip_set"], 0.0, ellip_max))
+    if "ap_isoinit_pa_set" in options:
+        pa = PA_shift_convention(np.deg2rad(options["ap_isoinit_pa_set"]))
+    radius = min(inner, max_radius)
+    anchors = []
+    guess = (ellip, pa)
+    while True:
+        node = _fit_sparse_anchor(dat, radius, guess, results["center"], variance,
+                                  mask, results["background noise"], ellip_max)
+        if node is None:
+            if fixed_outer and radius == max_radius:
+                raise ValueError("Sparse initialization cannot fit the outermost anchor.")
+            logging.warning("Insufficient samples for initialization at %.2f pixels.", radius)
+            if not fixed_outer:
+                break
+        else:
+            if not fixed_outer and node["level"] < limit:
+                if anchors:
+                    lower, upper = anchors[-1], node
+                    # Refine the endpoint; intermediate probes are not anchors.
+                    for _ in range(6):
+                        if upper["radius"] / lower["radius"] < 1.025:
+                            break
+                        mid = _fit_sparse_anchor(
+                            dat, np.sqrt(lower["radius"] * upper["radius"]),
+                            (lower["ellip"], lower["pa"]), results["center"],
+                            variance, mask, results["background noise"], ellip_max,
+                        )
+                        if mid is None:
+                            break
+                        if mid["level"] < limit:
+                            upper = mid
+                        else:
+                            lower = mid
+                    node = upper
+                anchors.append(node)
+                break
+            anchors.append(node)
+            guess = (node["ellip"], node["pa"])
+        if radius >= max_radius:
+            break
+        radius = min(radius * 2, max_radius)
+    if not anchors:
+        raise ValueError("Sparse initialization found no usable anchors.")
+    outer = anchors[-1]["radius"]
+    return IMG, {
+        "init ellip": ellip, "init pa": pa, "init R": outer,
+        "init profile R": np.asarray([node["radius"] for node in anchors]),
+        "init profile ellip": np.asarray([node["ellip"] for node in anchors]),
+        "init profile pa": np.asarray([node["pa"] for node in anchors]),
+        "auxfile initialize": "global ellipticity: %.3f +- nan, pa: %.3f +- nan deg, size: %f pix" % (
+            ellip, np.rad2deg(PA_shift_convention(pa)), outer,
+        ),
+    }
 
 
 def Isophote_Init_Forced(IMG, results, options):
@@ -259,8 +430,8 @@ def Isophote_Initialize(IMG, results, options):
       Maximum ellipticity (1 - b/a), strictly between 0 and 1.
       Shared by native initialization, fitting, uncertainties, and interpolation.
 
-    ap_fit_limit : float, default 2
-      noise level out to which to extend the fit in units of pixel background noise level. Default is 2, smaller values will end fitting further out in the galaxy image.
+    ap_fit_limit : float, default 1
+      noise level out to which to extend the fit in units of pixel background noise level. Default is 1, smaller values will end fitting further out in the galaxy image.
 
     ap_isoinit_pa_set : float, default None
       User set initial position angle in degrees, will override the calculation.
@@ -365,11 +536,11 @@ def Isophote_Initialize(IMG, results, options):
             circ_ellipse_radii.append(r)
             coefs = fft(isovals[0])
             allphase.append(coefs[2])
-            # Stop when at 3 time background noise
+            # Stop one background RMS above the fitting limit.
             if (
                 np.quantile(isovals[0], 0.8)
                 < (
-                    (options["ap_fit_limit"] + 1 if "ap_fit_limit" in options else 3)
+                    (options["ap_fit_limit"] + 1 if "ap_fit_limit" in options else 2)
                     * results["background noise"]
                 )
                 and len(circ_ellipse_radii) > 4
@@ -597,9 +768,9 @@ def Isophote_Initialize_mean(IMG, results, options):
       Maximum ellipticity (1 - b/a), strictly between 0 and 1.
       Shared by native initialization, fitting, uncertainties, and interpolation.
 
-    ap_fit_limit : float, default 2
+    ap_fit_limit : float, default 1
       noise level out to which to extend the fit in units of pixel
-      background noise level. Default is 2, smaller values will end
+      background noise level. Default is 1, smaller values will end
       fitting further out in the galaxy image.
 
     ap_isoinit_interpolate_method : string, default 'bilinear'

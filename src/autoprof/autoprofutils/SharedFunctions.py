@@ -1511,7 +1511,7 @@ def GetOptions(c):
     for var in dir(c):
         if var.startswith("ap_"):
             val = getattr(c, var)
-            if not val is None:
+            if val is not None or var == "ap_isofit_band_start":
                 newoptions[var] = val
 
     return newoptions

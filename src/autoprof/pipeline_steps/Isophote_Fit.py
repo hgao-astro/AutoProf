@@ -269,6 +269,28 @@ def _activate_inactive_ellipse_radii(
     return activated
 
 
+def _initial_ellipse_profile(radii, results, ellip_max):
+    """Interpolate sparse initial shapes in log radius, holding endpoints fixed."""
+    radii = np.asarray(radii, dtype=float)
+    if "init profile R" not in results:
+        return (
+            np.full(radii.shape, np.clip(results["init ellip"], 0.0, ellip_max)),
+            np.full(radii.shape, results["init pa"]),
+        )
+    anchors = np.asarray(results["init profile R"], dtype=float)
+    ellip = np.asarray(results["init profile ellip"], dtype=float)
+    pa = np.asarray(results["init profile pa"], dtype=float)
+    if (anchors.ndim != 1 or not len(anchors) or ellip.shape != anchors.shape
+            or pa.shape != anchors.shape or not np.all(np.isfinite(anchors))
+            or not np.all(np.isfinite(ellip)) or not np.all(np.isfinite(pa))
+            or np.any(anchors <= 0) or np.any(np.diff(anchors) <= 0)):
+        raise ValueError("Initial geometry profile requires finite, ordered positive radii and matching shapes.")
+    shape = _ellipse_shape(np.clip(ellip, 0.0, ellip_max), pa)
+    x, xp = np.log(radii), np.log(anchors)
+    trial = np.interp(x, xp, shape.real) + 1j * np.interp(x, xp, shape.imag)
+    return np.clip(-np.expm1(-np.abs(trial)), 0.0, ellip_max), (np.angle(trial) / 2) % np.pi
+
+
 def _determine_sample_radii(
     dat,
     IMG,
@@ -279,10 +301,10 @@ def _determine_sample_radii(
     startR,
     fit_limit_default,
     average_func,
-    minR=0.0,
     interp_method="bilinear",
     rad_interp=None,
 ):
+    """Select radii up to, but excluding, the first below-threshold sample."""
     ellip_max = _resolve_ellip_max(options)
     shrink = 0
     while shrink < 5:
@@ -292,12 +314,12 @@ def _determine_sample_radii(
         if rad_interp is not None:
             kwargs["rad_interp"] = rad_interp
         while radius < (max(IMG.shape) / 2):
-            sample_radii.append(radius)
+            ellip, pa = _initial_ellipse_profile(radius, results, ellip_max)
             isovals = _finite_isophote_samples(
                 _iso_extract_with_interp_cutoff(
                     dat,
                     radius,
-                    {"ellip": np.clip(results["init ellip"], 0.0, ellip_max), "pa": results["init pa"]},
+                    {"ellip": ellip, "pa": pa},
                     results["center"],
                     more=False,
                     mask=mask,
@@ -306,12 +328,12 @@ def _determine_sample_radii(
             )
             if (
                 len(isovals) > 0
-                and radius > minR
                 and average_func(isovals)
                 < (options["ap_fit_limit"] if "ap_fit_limit" in options else fit_limit_default)
                 * results["background noise"]
             ):
                 break
+            sample_radii.append(radius)
             radius *= 1.0 + scale / (1.0 + shrink)
         if len(sample_radii) < 15:
             shrink += 1
@@ -413,9 +435,9 @@ def Isophote_Fit_FixedPhase(IMG, results, options):
       growth scale when fitting isophotes, not the same as
       *ap_sample---scale*.
 
-    ap_fit_limit : float, default 2
+    ap_fit_limit : float, default 1
       noise level out to which to extend the fit in units of pixel
-      background noise level. Default is 2, smaller values will end
+      background noise level. Default is 1, smaller values will end
       fitting further out in the galaxy image.
 
     ap_isofit_interpolate_method : string, default 'bilinear'
@@ -483,13 +505,12 @@ def Isophote_Fit_FixedPhase(IMG, results, options):
         scale,
         mask,
         max(1.0, results["psf fwhm"] / 2),
-        2,
+        1,
         np.median,
         interp_method=interp_method,
         rad_interp=rad_interp,
     )
-    ellip = np.full(len(sample_radii), np.clip(results["init ellip"], 0.0, ellip_max))
-    pa = np.ones(len(sample_radii)) * results["init pa"]
+    ellip, pa = _initial_ellipse_profile(sample_radii, results, ellip_max)
     logging.debug("%s: sample radii: %s" % (options["ap_name"], str(sample_radii)))
 
     res = {
@@ -550,11 +571,85 @@ def _isofit_variance(dat, noise, options):
     return np.where(np.isfinite(rms) & (rms > 0), rms**2, np.nan)
 
 
+def _set_isofit_bands(dat, radii, parameters, center, noise, variance, mask, threshold):
+    """Fix band membership from initial brightness and log-midpoint boundaries."""
+    log_r = np.log(radii)
+    edges = np.exp(np.r_[log_r[0] - (log_r[1] - log_r[0]) / 2,
+                         (log_r[:-1] + log_r[1:]) / 2,
+                         log_r[-1] + (log_r[-1] - log_r[-2]) / 2])
+    invalid = ~np.isfinite(variance) | (variance <= 0)
+    if mask is not None:
+        invalid |= mask
+    for i, radius in enumerate(radii):
+        flux, _, choose, _ = _iso_extract_with_interp_cutoff(
+            dat, radius, parameters[i], center, more=True, mask=invalid,
+            return_choose=True, interp_method="bilinear",
+        )
+        if np.any(choose) and np.median(flux[choose]) < threshold * noise:
+            # Relative boundaries also move with the shifted uncertainty rings.
+            parameters[i]["_isoband"] = (edges[i] / radius, edges[i + 1] / radius)
+
+
+def _harmonic_band_operator(dat, radius, params, center, variance, mask):
+    """Fit polar harmonics to sector means of distinct, unmasked band pixels."""
+    q, pa = 1 - params["ellip"], params["pa"]
+    lower, upper = radius * np.asarray(params["_isoband"])
+    cp, sp = np.cos(pa), np.sin(pa)
+    dx = upper * np.hypot(cp, q * sp)
+    dy = upper * np.hypot(sp, q * cp)
+    x0, x1 = max(0, int(np.floor(center["x"] - dx))), min(dat.shape[1], int(np.ceil(center["x"] + dx)) + 1)
+    y0, y1 = max(0, int(np.floor(center["y"] - dy))), min(dat.shape[0], int(np.ceil(center["y"] + dy)) + 1)
+    xx = np.arange(x0, x1)[None, :] - center["x"]
+    yy = np.arange(y0, y1)[:, None] - center["y"]
+    x, y = xx * cp + yy * sp, -xx * sp + yy * cp
+    rho = np.hypot(x, y / q)
+    image = dat[y0:y1, x0:x1]
+    var = variance[y0:y1, x0:x1]
+    good = (rho >= lower) & (rho < upper) & np.isfinite(image) & np.isfinite(var) & (var > 0)
+    if mask is not None:
+        good &= ~mask[y0:y1, x0:x1]
+    iy, ix = np.nonzero(good)
+    if len(ix) < 8:
+        return None
+    x, y = x[good], y[good]
+    # Uniform eccentric-anomaly sectors have equal area before masking.
+    n = max(15, int(0.9 * 2 * np.pi * radius))
+    theta = np.arctan2(y / q, x) % (2 * np.pi)
+    bins = (np.floor(theta * n / (2 * np.pi) + 0.5).astype(int)) % n
+    counts = np.bincount(bins, minlength=n)
+    occupied = np.flatnonzero(counts)
+    if len(occupied) < 8 or len(occupied) / n < 0.35:
+        return None
+    angles = occupied * 2 * np.pi / n
+    if np.max(np.diff(np.r_[angles, angles[0] + 2 * np.pi])) > np.pi + 2 * np.pi / n:
+        return None
+    phi = np.arctan2(y, x)
+    # Average the harmonic basis over the same pixels as each sector mean.
+    basis = (np.ones(len(phi)), np.cos(phi), np.sin(phi), np.cos(2 * phi), np.sin(2 * phi))
+    design = np.column_stack([
+        np.bincount(bins, weights=b, minlength=n)[occupied] / counts[occupied] for b in basis
+    ])
+    gram = design.T @ design
+    eigen = np.linalg.eigvalsh(gram)
+    if eigen[0] <= 1e-6 * eigen[-1]:
+        return None
+    harmonic = np.linalg.solve(gram, design.T)[3:5]
+    operator = harmonic[:, np.searchsorted(occupied, bins)] / counts[bins]
+    pixels = (iy + y0) * dat.shape[1] + ix + x0
+    covariance = (operator * variance.ravel()[pixels]) @ operator.T
+    eigen = np.linalg.eigvalsh(covariance)
+    if eigen[0] <= 1e-10 * eigen[-1]:
+        return None
+    return pixels, operator, covariance
+
+
 def _harmonic_ring_operator(dat, radius, params, center, variance, mask):
-    """Fit second harmonics on one ring, including shared-pixel covariance."""
+    """Fit polar-angle harmonics on a ring or its configured mean-sampled band."""
     ellip, pa = params["ellip"], params["pa"]
     if not np.all(np.isfinite((radius, ellip, pa))) or radius <= 0:
         return None
+    if "_isoband" in params:
+        return _harmonic_band_operator(dat, radius, params, center, variance, mask)
     n = max(15, int(0.9 * 2 * np.pi * radius))
     theta = np.arange(n) * 2 * np.pi / n
     height, width = dat.shape
@@ -582,6 +677,8 @@ def _harmonic_ring_operator(dat, radius, params, center, variance, mask):
     angles = theta[good]
     if np.max(np.diff(np.r_[angles, angles[0] + 2 * np.pi])) > np.pi + 2 * np.pi / n:
         return None
+    # Keep the sampling and coverage in eccentric anomaly; fit in polar angle.
+    angles = np.arctan2(y[good], x[good])
     design = np.column_stack((np.ones(k), np.cos(angles), np.sin(angles),
                               np.cos(2 * angles), np.sin(2 * angles)))
     gram = design.T @ design
@@ -847,12 +944,21 @@ def _FFT_Robust_Errors(
                 return float(loss) if np.isfinite(loss) else 1e30
 
             try:
+                method = "SLSQP"
+                fit_options = {"ftol": 0.001}
+                if "_isoband" in PARAMS[ri]:
+                    # Pixel-centre band membership makes numerical gradients flat.
+                    method = "Nelder-Mead"
+                    fit_options = {"xatol": 1e-4, "fatol": 0.001, "maxiter": 150,
+                                   "initial_simplex": np.array([x0] + [
+                                       _perturb_ellipse(*x0, step, ellip_max)
+                                       for step in ((0.03, 0.0), (0.0, 0.03))])}
                 fit = minimize(
                     finite_loss,
                     x0=x0,
-                    method="SLSQP",
+                    method=method,
                     bounds=[(0, ellip_max), (0, np.pi)],
-                    options={"ftol": 0.001},
+                    options=fit_options,
                 )
             except Exception:
                 continue
@@ -877,7 +983,7 @@ def Isophote_Fit_FFT_Robust(IMG, results, options):
 
     Ordinary bilinear ellipse fits minimize Q2 + lambda * sum(abs(z_i-z_j)
     / abs(i-j)), where Q2 is the covariance-normalized second harmonic and
-    z = -ln(b/a) exp(2j PA). Harmonics are fit directly to valid samples,
+    z = -ln(b/a) exp(2j PA). Polar-angle harmonics are fit to valid samples,
     without clipping or filling masked angular gaps. There is no gradient
     significance gate. Shape proposals use an initial RMS displacement of
     0.15. Before stopping, try the inner neighbor's geometry and guided
@@ -900,9 +1006,9 @@ def Isophote_Fit_FFT_Robust(IMG, results, options):
       growth scale when fitting isophotes, not the same as
       *ap_sample---scale*.
 
-    ap_fit_limit : float, default 2
+    ap_fit_limit : float, default 1
       noise level out to which to extend the fit in units of pixel
-      background noise level. Default is 2, smaller values will end
+      background noise level. Default is 1, smaller values will end
       fitting further out in the galaxy image.
 
     ap_regularize_scale : float, default 4 for harmonic fitting, 1 otherwise
@@ -957,6 +1063,11 @@ def Isophote_Fit_FFT_Robust(IMG, results, options):
     ap_isofit_interpolate_method : string, default 'bilinear'
       Select method for flux interpolation while fitting isophotes.
       Options are 'lanczos', 'bicubic', and 'bilinear'.
+
+    ap_isofit_band_start : float, default 5 for harmonic fitting, None otherwise
+      Enable mean-sector bands below this initial median intensity / background
+      RMS. Band edges follow log midpoints of the fitting grid. Only
+      ordinary harmonic fits support this option; None retains line sampling.
 
     ap_isofit_iterlimitmax : int, default 1000
       Maximum number of iterations (each iteration adjusts every
@@ -1034,12 +1145,6 @@ def Isophote_Fit_FFT_Robust(IMG, results, options):
     )
     rad_interp = _iso_interpolate_radius(options, results)
 
-    if "ap_isoinit_R_set" in options:
-        minR = options["ap_isoinit_R_set"]
-    elif "init R" in results:
-        minR = results["init R"] * 0.8
-    else:
-        minR = 0.0
     # Determine sampling radii
     ######################################################################
     sample_radii = _determine_sample_radii(
@@ -1050,14 +1155,12 @@ def Isophote_Fit_FFT_Robust(IMG, results, options):
         scale,
         mask,
         max(1.0, results["psf fwhm"] / 2),
-        2,
+        1,
         np.median,
-        minR=minR,
         interp_method=interp_method,
         rad_interp=rad_interp,
     )
-    ellip = np.full(len(sample_radii), np.clip(results["init ellip"], 0.0, ellip_max))
-    pa = np.ones(len(sample_radii)) * results["init pa"]
+    ellip, pa = _initial_ellipse_profile(sample_radii, results, ellip_max)
     logging.debug("%s: sample radii: %s" % (options["ap_name"], str(sample_radii)))
     # Fit isophotes
     ######################################################################
@@ -1073,6 +1176,12 @@ def Isophote_Fit_FFT_Robust(IMG, results, options):
         fit_params is None and not fit_superellipse and interp_method == "bilinear"
         and (fit_coefs is None or tuple(fit_coefs) in ((), (2,)))
     )
+    band_start = options.get("ap_isofit_band_start", 5.0 if use_harmonic else None)
+    if band_start is not None:
+        if not np.isfinite(band_start) or band_start <= 0:
+            raise ValueError("ap_isofit_band_start must be finite and positive, or None.")
+        if not use_harmonic:
+            raise ValueError("ap_isofit_band_start requires ordinary bilinear harmonic fitting.")
     if not use_harmonic and (
         options.get("ap_isofit_rms") is not None or options.get("ap_isofit_gain") is not None
     ):
@@ -1100,6 +1209,9 @@ def Isophote_Fit_FFT_Robust(IMG, results, options):
         }
         for i in range(len(ellip))
     )
+    if band_start is not None:
+        _set_isofit_bands(dat, sample_radii, parameters, results["center"],
+                         results["background noise"], variance, mask, band_start)
 
     count = 0
 
@@ -1398,6 +1510,9 @@ def Isophote_Fit_FFT_Robust(IMG, results, options):
         "fit pa_err": pa_err,
         "auxfile fitlimit": "fit limit semi-major axis: %.2f pix" % sample_radii[-1],
     }
+    if band_start is not None:
+        limits = np.array([p.get("_isoband", (1.0, 1.0)) for p in parameters]) * sample_radii[:, None]
+        res["fit band lower R"], res["fit band upper R"] = limits.T
     if skipped_fit_radii > 0:
         res["auxfile fit masked radii"] = "fit radii excluded for insufficient samples: %i" % skipped_fit_radii
     if not fit_params is None:
@@ -1560,9 +1675,9 @@ def Isophote_Fit_FFT_mean(IMG, results, options):
       growth scale when fitting isophotes, not the same as
       *ap_sample---scale*.
 
-    ap_fit_limit : float, default 2
+    ap_fit_limit : float, default 1
       noise level out to which to extend the fit in units of pixel
-      background noise level. Default is 2, smaller values will end
+      background noise level. Default is 1, smaller values will end
       fitting further out in the galaxy image.
 
     ap_regularize_scale : float, default 1
@@ -1639,8 +1754,7 @@ def Isophote_Fit_FFT_mean(IMG, results, options):
         interp_method=interp_method,
         rad_interp=rad_interp,
     )
-    ellip = np.full(len(sample_radii), np.clip(results["init ellip"], 0.0, ellip_max))
-    pa = np.ones(len(sample_radii)) * results["init pa"]
+    ellip, pa = _initial_ellipse_profile(sample_radii, results, ellip_max)
     logging.debug("%s: sample radii: %s" % (options["ap_name"], str(sample_radii)))
 
     # Fit isophotes

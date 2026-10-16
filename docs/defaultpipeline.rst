@@ -37,7 +37,7 @@ Put plainly, the default AutoProf pipeline is as follows:
 1. Background: :func:`~autoprof.pipeline_steps.Background.Background_Mode`
 #. PSF: :func:`~autoprof.pipeline_steps.PSF.PSF_Assumed`
 #. Center: :func:`~autoprof.pipeline_steps.Center.Center_HillClimb`
-#. Initial Isophote: :func:`~autoprof.pipeline_steps.Isophote_Initialize.Isophote_Initialize`
+#. Initial Isophotes: :func:`~autoprof.pipeline_steps.Isophote_Initialize.Isophote_Initialize_Sparse`
 #. Fit Isophotes: :func:`~autoprof.pipeline_steps.Isophote_Fit.Isophote_Fit_FFT_Robust`
 #. Extract SB Profile: :func:`~autoprof.pipeline_steps.Isophote_Extract.Isophote_Extract`
 #. Check Fit: :func:`~autoprof.pipeline_steps.Check_Fit.Check_Fit`
@@ -45,6 +45,11 @@ Put plainly, the default AutoProf pipeline is as follows:
 
 each function above links to a detailed description of the method, and
 the parameters that it accepts.
+
+Sparse initialization fits outward to three background RMS. Ordinary harmonic
+fitting uses polar angles, regularization strength 4, and bands below five
+background RMS. Use ``isophoteinit legacy`` for the previous single-radius
+initializer, or ``ap_isofit_band_start = None`` for line sampling throughout.
 
 The reason a boarder is needed around the galaxy is because the
 :func:`~autoprof.pipeline_steps.Background.Background_Mode` method uses a 1/5th

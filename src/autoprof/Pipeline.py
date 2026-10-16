@@ -62,7 +62,9 @@ class Isophote_Pipeline(object):
             "center 1DGaussian": Center_1DGaussian,
             "center OfMass": Center_OfMass,
             "crop": Crop,
-            "isophoteinit": Isophote_Initialize,
+            "isophoteinit": Isophote_Initialize_Sparse,
+            "isophoteinit sparse": Isophote_Initialize_Sparse,
+            "isophoteinit legacy": Isophote_Initialize,
             "isophoteinit forced": Isophote_Init_Forced,
             "isophoteinit mean": Isophote_Initialize_mean,
             "plot image": Plot_Galaxy_Image,
@@ -141,9 +143,9 @@ class Isophote_Pipeline(object):
         returns list of times for each pipeline step if successful. else returns 1
         """
 
-        # Remove any options with None value so they don't interfere with analysis logic
+        # None explicitly disables default band sampling; other unset options are omitted.
         for key in list(options.keys()):
-            if options[key] is None:
+            if options[key] is None and key != "ap_isofit_band_start":
                 del options[key]
 
         # Seed the random number generator in numpy so each thread gets unique random numbers
