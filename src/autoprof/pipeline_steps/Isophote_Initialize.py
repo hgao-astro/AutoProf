@@ -289,6 +289,12 @@ def Isophote_Initialize_Sparse(IMG, results, options):
         radius = min(radius * 2, max_radius)
     if not anchors:
         raise ValueError("Sparse initialization found no usable anchors.")
+    if options.get("ap_doplot", False):
+        Plot_Isophote_Init_Ellipse(
+            dat, [node["radius"] for node in anchors],
+            [node["ellip"] for node in anchors], [node["pa"] for node in anchors],
+            results, options,
+        )
     outer = anchors[-1]["radius"]
     return IMG, {
         "init ellip": ellip, "init pa": pa, "init R": outer,

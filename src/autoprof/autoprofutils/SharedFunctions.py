@@ -140,31 +140,46 @@ def _spline_fill_nonfinite(IMG, options=None, max_spline_points=50000):
 
 def LSBImage(dat, noise):
     plt.figure(figsize=(6, 6))
-    try:
+    dat = np.ma.masked_invalid(dat)
+    finite_values = dat.compressed()
+    if finite_values.size == 0:
+        logging.warning("Skipping LSB image display; no finite pixels")
+    elif not np.isfinite(noise) or noise <= 0 or np.ptp(finite_values) == 0:
         plt.imshow(
             dat,
             origin="lower",
             cmap="Greys",
-            norm=ImageNormalize(
-                stretch=HistEqStretch(dat[dat <= 3 * noise]),
-                clip=False,
-                vmax=3 * noise,
-                vmin=np.min(dat),
-            ),
+            vmin=np.min(finite_values),
+            vmax=np.max(finite_values),
         )
-    except ValueError:
-        pass
-    my_cmap = copy(cm.Greys_r)
-    my_cmap.set_under("k", alpha=0)
+    else:
+        faint_values = finite_values[finite_values <= 3 * noise]
+        if faint_values.size > 0 and np.ptp(faint_values) > 0:
+            plt.imshow(
+                dat,
+                origin="lower",
+                cmap="Greys",
+                norm=ImageNormalize(
+                    stretch=HistEqStretch(faint_values),
+                    clip=False,
+                    vmax=3 * noise,
+                    vmin=np.min(finite_values),
+                ),
+            )
+        bright = np.ma.masked_where(dat < 3 * noise, dat)
+        if bright.count() > 0:
+            my_cmap = copy(cm.Greys_r)
+            my_cmap.set_under("k", alpha=0)
 
-    plt.imshow(
-        np.ma.masked_where(dat < 3 * noise, dat),
-        origin="lower",
-        cmap=my_cmap,
-        norm=ImageNormalize(stretch=LogStretch(), clip=False),
-        clim=[3 * noise, None],
-        interpolation="none",
-    )
+            plt.imshow(
+                bright,
+                origin="lower",
+                cmap=my_cmap,
+                norm=ImageNormalize(
+                    stretch=LogStretch(), clip=False, vmin=3 * noise, vmax=np.max(bright)
+                ),
+                interpolation="none",
+            )
     plt.xticks([])
     plt.yticks([])
     plt.subplots_adjust(left=0.03, right=0.97, top=0.97, bottom=0.05)

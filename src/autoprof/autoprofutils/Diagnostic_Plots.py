@@ -107,6 +107,7 @@ def Plot_PSF_Stars(IMG, stars_x, stars_y, stars_fwhm, psf, results, options, fla
 
 
 def Plot_Isophote_Init_Ellipse(dat, circ_ellipse_radii, ellip, phase, results, options):
+    """Overlay the legacy outer ellipse or a sparse profile of anchor ellipses."""
     ranges = [
         [
             max(0, int(results["center"]["x"] - circ_ellipse_radii[-1] * 1.5)),
@@ -123,20 +124,25 @@ def Plot_Isophote_Init_Ellipse(dat, circ_ellipse_radii, ellip, phase, results, o
         results["background noise"],
     )
     AddScale(plt.gca(), (ranges[0][1] - ranges[0][0]) * options["ap_pixscale"])
-    plt.gca().add_patch(
-        Ellipse(
-            xy=(
-                results["center"]["x"] - ranges[0][0],
-                results["center"]["y"] - ranges[1][0],
-            ),
-            width=2 * circ_ellipse_radii[-1],
-            height=2 * circ_ellipse_radii[-1] * (1.0 - ellip),
-            angle=phase * 180 / np.pi,
-            fill=False,
-            linewidth=1,
-            color=autocolours["blue1"],
+    if np.ndim(ellip) == 0:
+        radii, ellips, phases = [circ_ellipse_radii[-1]], [ellip], [phase]
+    else:
+        radii, ellips, phases = circ_ellipse_radii, ellip, phase
+    for radius, ellipticity, pa in zip(radii, ellips, phases):
+        plt.gca().add_patch(
+            Ellipse(
+                xy=(
+                    results["center"]["x"] - ranges[0][0],
+                    results["center"]["y"] - ranges[1][0],
+                ),
+                width=2 * radius,
+                height=2 * radius * (1.0 - ellipticity),
+                angle=pa * 180 / np.pi,
+                fill=False,
+                linewidth=1,
+                color=autocolours["blue1"],
+            )
         )
-    )
     plt.plot(
         [results["center"]["x"] - ranges[0][0]],
         [results["center"]["y"] - ranges[1][0]],

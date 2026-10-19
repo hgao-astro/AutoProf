@@ -99,6 +99,9 @@ def Mask_Segmentation_Map(IMG, results, options):
     ap_mask_file : string, default None
       path to fits file which is a mask for the image. Must have the same dimensions as the main image.
 
+    ap_sampleendR : float, default None
+      When set, crop the diagnostic view to 1.2 times this radius in pixels around the target.
+
     See Also
     --------
     ap_savemask : bool, default False
@@ -170,17 +173,32 @@ def Mask_Segmentation_Map(IMG, results, options):
 
     # Plot star mask for diagnostic purposes
     if "ap_doplot" in options and options["ap_doplot"]:
-        bkgrnd = results["background"] if "background" in results else np.median(IMG)
+        finite_values = IMG[np.isfinite(IMG)]
+        if finite_values.size == 0:
+            logging.warning("%s: skipping mask plot; no finite image pixels", options["ap_name"])
+            return IMG, {"mask": mask.astype(bool)}
+        bkgrnd = results["background"] if "background" in results else np.median(finite_values)
         noise = (
             results["background noise"]
             if "background noise" in results
-            else iqr(IMG, rng=[16, 84]) / 2
+            else iqr(finite_values, rng=[16, 84]) / 2
         )
         LSBImage(IMG - bkgrnd, noise)
         showmask = np.copy(mask)
         showmask[showmask > 1] = 1
         showmask[showmask < 1] = np.nan
         plt.imshow(showmask, origin="lower", cmap="Reds_r", alpha=0.5)
+        if options.get("ap_sampleendR") is not None:
+            center = results.get(
+                "center", options.get(
+                    "ap_set_center", options.get(
+                        "ap_guess_center", {"x": IMG.shape[1] / 2, "y": IMG.shape[0] / 2}
+                    )
+                )
+            )
+            radius = 1.2 * options["ap_sampleendR"]
+            plt.xlim(max(0, center["x"] - radius), min(IMG.shape[1], center["x"] + radius))
+            plt.ylim(max(0, center["y"] - radius), min(IMG.shape[0], center["y"] + radius))
         plt.tight_layout()
         if not ("ap_nologo" in options and options["ap_nologo"]):
             AddLogo(plt.gcf())
