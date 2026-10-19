@@ -49,9 +49,9 @@ def _apply_background_speedup(values, options):
 
 
 def Background_Mode(IMG, results, options):
-    """Compute the mode flux in the border of an image.
+    """Compute the background mode from selected image pixels.
 
-    Takes all pixels in a 1/5th border of the image. Applies a
+    Uses the pipeline cutout, existing mask, or image border. Applies a
     Gaussian smoothing length of log10(sqrt(N)) where N is the number
     of sampled pixels. The peak of the smoothed distribution is found
     using Nelder-Mead optimization. To compute the noise in the
@@ -68,6 +68,9 @@ def Background_Mode(IMG, results, options):
 
     ap_set_background_noise : float, default None
       User provided background noise level in flux
+
+    ap_sampleendR : float, default None
+      When set, the pipeline crops first and background sampling uses the whole cutout.
 
     ap_background_speedup : int, default 1
       For large images, this can be millions of pixels, which is not
@@ -94,8 +97,7 @@ def Background_Mode(IMG, results, options):
 
         }
     """
-    # Mask main body of image so only outer 1/5th is used
-    # for background calculation.
+    cropped = "_input_crop" in options
     use_existing_mask = "mask" in results and results["mask"] is not None and np.any(results["mask"])
     if use_existing_mask:
         mask = np.logical_not(results["mask"])
@@ -103,10 +105,12 @@ def Background_Mode(IMG, results, options):
             "%s: Background using mask. Masking %i pixels"
             % (options["ap_name"], np.sum(results["mask"]))
         )
+    elif cropped:
+        mask = np.ones(IMG.shape, dtype=bool)
     else:
         mask = _background_border_mask(IMG.shape)
     values = _finite_sample_values(IMG, mask)
-    if len(values) < 1e5 and not use_existing_mask:
+    if len(values) < 1e5 and not use_existing_mask and not cropped:
         values = IMG[np.isfinite(IMG)].flatten()
     values = _require_background_values(_apply_background_speedup(values, options))
 
@@ -183,6 +187,8 @@ def Background_DilatedSources(IMG, results, options):
     # for background calculation.
     if "mask" in results and not results["mask"] is None:
         mask = results["mask"].astype(bool)
+    elif "_input_crop" in options:
+        mask = np.zeros(IMG.shape, dtype=bool)
     else:
         mask = np.zeros(IMG.shape, dtype=bool)
         mask[
@@ -295,12 +301,15 @@ def Background_Basic(IMG, results, options):
 
     """
     mask = np.ones(IMG.shape, dtype=bool)
-    mask[
-        int(IMG.shape[0] / 5.0) : int(4.0 * IMG.shape[0] / 5.0),
-        int(IMG.shape[1] / 5.0) : int(4.0 * IMG.shape[1] / 5.0),
-    ] = False
+    if "_input_crop" not in options:
+        mask[
+            int(IMG.shape[0] / 5.0) : int(4.0 * IMG.shape[0] / 5.0),
+            int(IMG.shape[1] / 5.0) : int(4.0 * IMG.shape[1] / 5.0),
+        ] = False
+    elif results.get("mask") is not None:
+        mask &= np.logical_not(results["mask"])
     values = _finite_sample_values(IMG, mask)
-    if len(values) < 1e3:
+    if len(values) < 1e3 and "_input_crop" not in options:
         values = IMG[np.isfinite(IMG)].flatten()
     values = _require_background_values(_apply_background_speedup(values, options))
 

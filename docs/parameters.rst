@@ -952,13 +952,21 @@ ap_sampleendR (float, default None)
 
 **Referencing Methods**
 
+- :meth:`~autoprof.Pipeline.Isophote_Pipeline.Process_Image`
 - :func:`~autoprof.pipeline_steps.Isophote_Extract.Isophote_Extract`
 - :func:`~autoprof.pipeline_steps.Isophote_Extract.Isophote_Extract_Forced`
+- :func:`~autoprof.pipeline_steps.Background.Background_Mode`
+- :func:`~autoprof.pipeline_steps.Mask.Mask_Segmentation_Map`
 
 **Description**
 
 Maximum sampling radius in pixels for normal and forced extraction.
 Overrides *ap_extractfull* and the default three-times-fit-radius limit.
+When set, all pipeline steps use a square cutout extending twice this radius
+from the supplied/forced center (or image center), clipped at image edges.
+Background statistics use the whole cutout, respecting masks. Input masks
+and RMS maps must match the original image. Reported centers and saved masks
+remain in the original image frame; pixels outside the cutout are masked.
 
 ap_samplegeometricscale (float, default ap_scale)
 ----------------------------------------------------------------------

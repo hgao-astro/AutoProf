@@ -14,6 +14,7 @@ from ..autoprofutils.SharedFunctions import (
     AddLogo,
     StarFind,
     _nearest_finite_fill,
+    _crop_input_array,
 )
 
 __all__ = ("Bad_Pixel_Mask", "Mask_Segmentation_Map", "Star_Mask_IRAF", "Star_Mask")
@@ -132,6 +133,7 @@ def Mask_Segmentation_Map(IMG, results, options):
         mask = np.zeros(IMG.shape, dtype=bool)
     else:
         mask = Read_Image(options["ap_mask_file"], options)
+        mask = _crop_input_array(mask, options)
 
     if "center" in results:
         if mask[int(results["center"]["y"]), int(results["center"]["x"])] > 1.1:

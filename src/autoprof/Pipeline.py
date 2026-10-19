@@ -17,7 +17,7 @@ from .pipeline_steps import *
 # from .pipeline_steps.Radial_Profiles import Radial_Profiles
 # from .pipeline_steps.Axial_Profiles import Axial_Profiles
 # from .pipeline_steps.Slice_Profiles import Slice_Profile
-from .autoprofutils.ImageTransform import Crop
+from .autoprofutils.ImageTransform import Crop, _prepare_image_crop
 from .autoprofutils.SharedFunctions import GetOptions, Read_Image, PA_shift_convention
 from multiprocessing import Pool, current_process
 from astropy.io import fits
@@ -143,6 +143,7 @@ class Isophote_Pipeline(object):
         returns list of times for each pipeline step if successful. else returns 1
         """
 
+        options = options.copy()
         # None explicitly disables default band sampling; other unset options are omitted.
         for key in list(options.keys()):
             if options[key] is None and key != "ap_isofit_band_start":
@@ -165,9 +166,11 @@ class Isophote_Pipeline(object):
         # Read the primary image
         try:
             dat = Read_Image(options["ap_image_file"], options)
-        except:
+            dat, options = _prepare_image_crop(dat, options)
+        except Exception as e:
             logging.error(
-                "%s: could not read image %s" % (options["ap_name"], options["ap_image_file"])
+                "%s: could not read/prepare image %s: %s"
+                % (options["ap_name"], options["ap_image_file"], e)
             )
             return 1
 

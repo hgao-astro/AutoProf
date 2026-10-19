@@ -1459,6 +1459,29 @@ def _inv_x_to_eps(eps):
     return 0.5 + np.tan(np.pi * (eps - 0.5))  # 0.5 - np.log(0.96/(eps - 0.02) - 1.)
 
 
+def _read_forced_center(profile):
+    """Read center coordinates in the original image frame from a profile's aux file."""
+    with open(profile[:-4] + "aux", "r") as stream:
+        for line in stream:
+            if line.startswith("center"):
+                return {
+                    "x": float(line[line.find("x:") + 3 : line.find("pix")]),
+                    "y": float(line[line.find("y:") + 3 : line.rfind("pix")]),
+                }
+    raise ValueError("No center in the forcing profile's aux file.")
+
+
+def _crop_input_array(data, options):
+    """Apply the science-image crop to an aligned input mask or RMS map."""
+    crop = options.get("_input_crop")
+    if crop is None:
+        return data
+    if data.shape != crop["shape"]:
+        raise ValueError("Input mask/RMS map must match the original image shape.")
+    y0, y1, x0, x1 = crop["bounds"]
+    return data[y0:y1, x0:x1].copy()
+
+
 def Read_Image(filename, options):
     """
     Reads a galaxy image given a file name. In a fits image the data is assumed to exist in the

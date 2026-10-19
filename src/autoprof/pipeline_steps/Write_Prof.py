@@ -79,19 +79,32 @@ def WriteProf(IMG, results, options):
 
     saveto = options["ap_saveto"] if "ap_saveto" in options else "./"
 
+    crop = options.get("_input_crop")
+    aux_results = results.copy()
+    if crop is not None:
+        y0, y1, x0, x1 = crop["bounds"]
+        aux_results["auxfile crop"] = "input crop: x [%i, %i), y [%i, %i) pix" % (x0, x1, y0, y1)
+        if "center" in results:
+            aux_results["auxfile center"] = "center x: %.2f pix, y: %.2f pix" % (
+                results["center"]["x"] + x0, results["center"]["y"] + y0,
+            )
+
     # Write aux file
     with open(os.path.join(saveto, options["ap_name"] + ".aux"), "w") as f:
         # write profile info
         f.write("written on: %s\n" % str(datetime.now()))
         f.write("name: %s\n" % str(options["ap_name"]))
 
-        for r in sorted(results.keys()):
+        for r in sorted(aux_results.keys()):
             if "auxfile" in r:
-                f.write(results[r] + "\n")
+                f.write(aux_results[r] + "\n")
         for k in sorted(options.keys()):
-            if k == "ap_name":
+            if k in ("ap_name", "_input_crop"):
                 continue
-            f.write("option %s: %s\n" % (k, str(options[k])))
+            value = options[k]
+            if crop is not None and k in ("ap_guess_center", "ap_set_center"):
+                value = {"x": value["x"] + x0, "y": value["y"] + y0}
+            f.write("option %s: %s\n" % (k, str(value)))
 
     # Write the profile
     delim = options["ap_delimiter"] if "ap_delimiter" in options else ","
@@ -139,7 +152,12 @@ def WriteProf(IMG, results, options):
         and "ap_savemask" in options
         and options["ap_savemask"]
     ):
-        hdul = fits.HDUList([fits.PrimaryHDU(results["mask"].astype(int))])
+        saved_mask = results["mask"].astype(int)
+        if crop is not None:
+            # Keep saved masks aligned with the input image; unprocessed pixels are masked.
+            saved_mask = np.ones(crop["shape"], dtype=int)
+            saved_mask[y0:y1, x0:x1] = results["mask"]
+        hdul = fits.HDUList([fits.PrimaryHDU(saved_mask)])
         hdul.writeto(saveto + options["ap_name"] + "_mask.fits", overwrite=True)
         sleep(1)
         # Zip the mask file because it can be large and take a lot of memory, but in principle

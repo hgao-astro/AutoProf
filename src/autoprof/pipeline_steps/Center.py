@@ -9,6 +9,7 @@ from ..autoprofutils.SharedFunctions import (
     AddLogo,
     Angle_Median,
     flux_to_sb,
+    _read_forced_center,
 )
 from photutils.centroids import centroid_2dg, centroid_com, centroid_1dg
 from astropy.visualization import SqrtStretch, LogStretch
@@ -113,21 +114,10 @@ def Center_Forced(IMG, results, options):
         }
 
     try:
-        with open(options["ap_forcing_profile"][:-4] + "aux", "r") as f:
-            for line in f.readlines():
-                if line[:6] == "center":
-                    x_loc = line.find("x:")
-                    y_loc = line.find("y:")
-                    current_center = {
-                        "x": float(line[x_loc + 3 : line.find("pix")]),
-                        "y": float(line[y_loc + 3 : line.rfind("pix")]),
-                    }
-                    break
-            else:
-                logging.warning(
-                    "%s: Forced center failed! Using image center (or guess)."
-                    % options["ap_name"]
-                )
+        current_center = _read_forced_center(options["ap_forcing_profile"])
+        if "_input_crop" in options:
+            y0, _, x0, _ = options["_input_crop"]["bounds"]
+            current_center = {"x": current_center["x"] - x0, "y": current_center["y"] - y0}
     except:
         logging.warning(
             "%s: Forced center failed! Using image center (or guess)."

@@ -2,9 +2,40 @@ import numpy as np
 import sys
 import os
 
-from .SharedFunctions import _image_resample_bicubic, _interpolate_Lanczos
+from .SharedFunctions import _image_resample_bicubic, _interpolate_Lanczos, _read_forced_center
 
 __all__ = ("Crop", "Resolution")
+
+
+def _prepare_image_crop(IMG, options):
+    """Crop once before the pipeline and translate supplied centers to the cutout."""
+    radius = options.get("ap_sampleendR")
+    if radius is None:
+        return IMG, options
+    if not np.isfinite(radius) or radius <= 0:
+        raise ValueError("ap_sampleendR must be finite and positive.")
+    center = options.get("ap_guess_center", {"x": IMG.shape[1] / 2, "y": IMG.shape[0] / 2})
+    if "ap_set_center" in options:
+        center = options["ap_set_center"]
+    elif options.get("ap_forcing_profile") is not None:
+        try:
+            center = _read_forced_center(options["ap_forcing_profile"])
+        except (OSError, ValueError):
+            pass  # Center_Forced reports the missing center and uses the same fallback.
+    x, y = center["x"], center["y"]
+    if not (0 <= x < IMG.shape[1] and 0 <= y < IMG.shape[0]):
+        raise ValueError("Crop center must lie inside the input image.")
+    x0, x1 = max(0, int(np.floor(x - 2 * radius))), min(IMG.shape[1], int(np.ceil(x + 2 * radius)))
+    y0, y1 = max(0, int(np.floor(y - 2 * radius))), min(IMG.shape[0], int(np.ceil(y + 2 * radius)))
+    options = options.copy()
+    options["_input_crop"] = {"shape": IMG.shape, "bounds": (y0, y1, x0, x1)}
+    # An edge-clipped cutout need not have the target at its midpoint.
+    options.setdefault("ap_guess_center", center)
+    for key in ("ap_guess_center", "ap_set_center"):
+        if key in options:
+            options[key] = {"x": options[key]["x"] - x0, "y": options[key]["y"] - y0}
+    return IMG[y0:y1, x0:x1].copy(), options
+
 
 def Crop(IMG, results, options):
     """

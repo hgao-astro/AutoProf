@@ -21,6 +21,7 @@ from ..autoprofutils.SharedFunctions import (
     _validate_interpolate_method,
     _photutils_masked_data,
     Read_Image,
+    _crop_input_array,
     _DEFAULT_ELLIP_MAX,
     _resolve_ellip_max,
     _ellip_to_logq,
@@ -566,6 +567,7 @@ def _isofit_variance(dat, noise, options):
     if isinstance(rms, str):
         rms = Read_Image(rms, {})
     rms = np.asarray(rms, dtype=float)
+    rms = _crop_input_array(rms, options)
     if rms.shape != dat.shape:
         raise ValueError("ap_isofit_rms must have the same shape as the image.")
     # Nonpositive/nonfinite RMS pixels are excluded, not assigned infinite weight.
