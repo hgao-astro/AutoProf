@@ -155,12 +155,16 @@ def LSBImage(dat, noise):
     else:
         faint_values = finite_values[finite_values <= 3 * noise]
         if faint_values.size > 0 and np.ptp(faint_values) > 0:
+            # Sample the CDF for display; quantile spacing retains faint contrast around outliers.
+            stride = max(1, int(np.ceil(faint_values.size / 262144)))
+            quantiles = np.quantile(faint_values[::stride], np.linspace(0, 1, 1025))
+            quantiles[0], quantiles[-1] = np.min(faint_values), np.max(faint_values)
             plt.imshow(
                 dat,
                 origin="lower",
                 cmap="Greys",
                 norm=ImageNormalize(
-                    stretch=HistEqStretch(faint_values),
+                    stretch=HistEqStretch(quantiles),
                     clip=False,
                     vmax=3 * noise,
                     vmin=np.min(finite_values),

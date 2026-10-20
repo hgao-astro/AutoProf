@@ -231,6 +231,17 @@ def Plot_Isophote_Fit(dat, sample_radii, parameters, results, options):
         dat[ranges[1][0] : ranges[1][1], ranges[0][0] : ranges[0][1]],
         results["background noise"],
     )
+    if results.get("mask") is not None:
+        mask = results["mask"][ranges[1][0] : ranges[1][1], ranges[0][0] : ranges[0][1]]
+        if np.any(mask):
+            plt.imshow(
+                np.ma.masked_equal(mask, 0),
+                origin="lower",
+                cmap=matplotlib.colors.ListedColormap(["#0072FF"]),
+                alpha=0.6,
+                interpolation="none",
+                zorder=1,
+            )
     AddScale(plt.gca(), (ranges[0][1] - ranges[0][0]) * options["ap_pixscale"])
 
     for i in range(len(sample_radii)):
