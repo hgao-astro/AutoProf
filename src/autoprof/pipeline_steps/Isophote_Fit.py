@@ -590,26 +590,42 @@ def _set_isofit_bands(dat, radii, parameters, center, noise, variance, mask, thr
             parameters[i]["_isoband"] = (lower[i] / radius, upper[i] / radius)
 
 
-def _harmonic_band_operator(dat, radius, params, center, variance, mask):
-    """Fit polar harmonics to sector means of distinct, unmasked band pixels."""
+def _harmonic_band_operator(dat, radius, params, center, variance, mask, return_statistics=False):
+    """Fit sector means, returning pixel weights or harmonics and covariance."""
     q, pa = 1 - params["ellip"], params["pa"]
     lower, upper = radius * np.asarray(params["_isoband"])
     cp, sp = np.cos(pa), np.sin(pa)
-    dx = upper * np.hypot(cp, q * sp)
     dy = upper * np.hypot(sp, q * cp)
-    x0, x1 = max(0, int(np.floor(center["x"] - dx))), min(dat.shape[1], int(np.ceil(center["x"] + dx)) + 1)
     y0, y1 = max(0, int(np.floor(center["y"] - dy))), min(dat.shape[0], int(np.ceil(center["y"] + dy)) + 1)
-    xx = np.arange(x0, x1)[None, :] - center["x"]
-    yy = np.arange(y0, y1)[:, None] - center["y"]
+    rows = np.arange(y0, y1)
+    yy = rows - center["y"]
+    # Row intersections with the two ellipses skip the band's interior hole.
+    d = sp**2 + (q * cp)**2
+    middle = center["x"] + cp * sp * (1 - q**2) * yy / d
+    outer = q * np.sqrt(np.maximum(d * upper**2 - yy**2, 0)) / d
+    inner = q * np.sqrt(np.maximum(d * lower**2 - yy**2, 0)) / d
+    # Keep boundary candidates conservatively; the original rho test below
+    # determines membership, including pixels exactly on either boundary.
+    left = np.clip(np.floor(middle - outer).astype(int) - 1, 0, dat.shape[1])
+    right = np.clip(np.ceil(middle + outer).astype(int) + 2, 0, dat.shape[1])
+    hole_left = np.clip(np.ceil(middle - inner).astype(int) + 1, left, right)
+    hole_right = np.clip(np.floor(middle + inner).astype(int), hole_left, right)
+    starts = np.column_stack((left, hole_right)).ravel()
+    lengths = (np.column_stack((hole_left, right)).ravel() - starts)
+    offsets = np.cumsum(lengths) - lengths
+    pixels = (np.repeat(np.repeat(rows, 2) * dat.shape[1] + starts - offsets, lengths)
+              + np.arange(np.sum(lengths)))
+    iy, ix = np.divmod(pixels, dat.shape[1])
+    xx, yy = ix - center["x"], iy - center["y"]
     x, y = xx * cp + yy * sp, -xx * sp + yy * cp
     rho = np.hypot(x, y / q)
-    image = dat[y0:y1, x0:x1]
-    var = variance[y0:y1, x0:x1]
+    image = dat[iy, ix]
+    var = variance[iy, ix]
     good = (rho >= lower) & (rho < upper) & np.isfinite(image) & np.isfinite(var) & (var > 0)
     if mask is not None:
-        good &= ~mask[y0:y1, x0:x1]
-    iy, ix = np.nonzero(good)
-    if len(ix) < 8:
+        good &= ~mask[iy, ix]
+    pixels = pixels[good]
+    if len(pixels) < 8:
         return None
     x, y = x[good], y[good]
     # Uniform eccentric-anomaly sectors have equal area before masking.
@@ -634,22 +650,29 @@ def _harmonic_band_operator(dat, radius, params, center, variance, mask):
     if eigen[0] <= 1e-6 * eigen[-1]:
         return None
     harmonic = np.linalg.solve(gram, design.T)[3:5]
-    operator = harmonic[:, np.searchsorted(occupied, bins)] / counts[bins]
-    pixels = (iy + y0) * dat.shape[1] + ix + x0
-    covariance = (operator * variance.ravel()[pixels]) @ operator.T
+    if return_statistics:
+        means = np.bincount(bins, weights=image[good], minlength=n)[occupied] / counts[occupied]
+        mean_variance = (np.bincount(bins, weights=var[good], minlength=n)[occupied]
+                         / counts[occupied]**2)
+        covariance = (harmonic * mean_variance) @ harmonic.T
+    else:
+        operator = harmonic[:, np.searchsorted(occupied, bins)] / counts[bins]
+        covariance = (operator * var[good]) @ operator.T
     eigen = np.linalg.eigvalsh(covariance)
     if eigen[0] <= 1e-10 * eigen[-1]:
         return None
-    return pixels, operator, covariance
+    return (harmonic @ means, covariance) if return_statistics else (pixels, operator, covariance)
 
 
-def _harmonic_ring_operator(dat, radius, params, center, variance, mask):
-    """Fit polar-angle harmonics on a ring or its configured mean-sampled band."""
+def _harmonic_ring_operator(dat, radius, params, center, variance, mask, return_statistics=False):
+    """Fit a ring or band, returning pixel weights or harmonics and covariance."""
     ellip, pa = params["ellip"], params["pa"]
     if not np.all(np.isfinite((radius, ellip, pa))) or radius <= 0:
         return None
     if "_isoband" in params:
-        return _harmonic_band_operator(dat, radius, params, center, variance, mask)
+        return _harmonic_band_operator(
+            dat, radius, params, center, variance, mask, return_statistics=return_statistics
+        )
     n = max(15, int(0.9 * 2 * np.pi * radius))
     theta = np.arange(n) * 2 * np.pi / n
     height, width = dat.shape
@@ -694,16 +717,28 @@ def _harmonic_ring_operator(dat, radius, params, center, variance, mask):
     eigen = np.linalg.eigvalsh(covariance)
     if eigen[0] <= 1e-10 * eigen[-1]:
         return None
+    if return_statistics:
+        return operator @ dat.ravel()[pixels], covariance
     return pixels, operator, covariance
 
 
-def _harmonic_shape_loss(dat, R, parameters, i, center, variance, mask, reg_scale, active_mask):
-    fitted = _harmonic_ring_operator(dat, R[i], parameters[i], center, variance, mask)
-    if fitted is None:
-        return np.inf
-    pixels, operator, covariance = fitted
-    harmonics = operator @ dat.ravel()[pixels]
-    q2 = harmonics @ np.linalg.solve(covariance, harmonics)
+def _harmonic_shape_loss(
+    dat, R, parameters, i, center, variance, mask, reg_scale, active_mask, data_cache=None
+):
+    # Only cache within a fit: image, variance, mask and center stay fixed.
+    key = (R[i], parameters[i]["ellip"], parameters[i]["pa"], parameters[i].get("_isoband"))
+    if data_cache is not None and key in data_cache:
+        q2 = data_cache[key]
+    else:
+        fitted = _harmonic_ring_operator(
+            dat, R[i], parameters[i], center, variance, mask, return_statistics=True
+        )
+        if fitted is None:
+            return np.inf
+        harmonics, covariance = fitted
+        q2 = harmonics @ np.linalg.solve(covariance, harmonics)
+        if data_cache is not None:
+            data_cache[key] = q2
     shape = _ellipse_shape(parameters[i]["ellip"], parameters[i]["pa"])
     penalty = sum(
         abs(shape - _ellipse_shape(parameters[j]["ellip"], parameters[j]["pa"])) / abs(i - j)
@@ -729,9 +764,12 @@ def _FFT_Robust_loss(
     interp_method="bilinear",
     rad_interp=None,
     variance=None,
+    data_cache=None,
 ):
     if variance is not None:
-        return _harmonic_shape_loss(dat, R, PARAMS, i, C, variance, mask, reg_scale, active_mask)
+        return _harmonic_shape_loss(
+            dat, R, PARAMS, i, C, variance, mask, reg_scale, active_mask, data_cache=data_cache
+        )
     if fit_coefs is not None and len(fit_coefs) == 0:
         fit_coefs = None
     max_mode = _max_fit_mode(fit_coefs)
@@ -1307,6 +1345,7 @@ def Isophote_Fit_FFT_Robust(IMG, results, options):
     # Keep two ellipse slots to preserve the C/Fourier proposal schedule.
     param_cycle = 2
     base_params = 2 + int(fit_superellipse)
+    data_cache = {} if use_harmonic else None
     while count < iterlimitmax:
         I = np.flatnonzero(active_mask)
         if len(I) == 0:
@@ -1319,6 +1358,13 @@ def Isophote_Fit_FFT_Robust(IMG, results, options):
         np.random.shuffle(I)
         N_perturb = int(1 + (10 / np.sqrt(count)))
         activated_this_pass = False
+        if data_cache is not None:
+            # Retain accepted geometries between passes, without copying the cache into trials.
+            keys = (
+                (sample_radii[i], p["ellip"], p["pa"], p.get("_isoband"))
+                for i, p in enumerate(parameters)
+            )
+            data_cache = {key: data_cache[key] for key in keys if key in data_cache}
 
         def loss(params, i):
             return _FFT_Robust_loss(
@@ -1328,7 +1374,7 @@ def Isophote_Fit_FFT_Robust(IMG, results, options):
                 robust_clip=robust_clip, fit_coefs=fit_coefs,
                 name=options["ap_name"], active_mask=active_mask,
                 interp_method=interp_method, rad_interp=rad_interp,
-                variance=variance,
+                variance=variance, data_cache=data_cache,
             )
 
         for i in I:
