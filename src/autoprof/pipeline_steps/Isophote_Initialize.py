@@ -193,6 +193,7 @@ def Isophote_Initialize_Sparse(IMG, results, options):
     background RMS falls below ``ap_isoinit_limit`` (default 3). Anchors
     start at three PSF FWHM, double in radius, and refine the threshold
     crossing to within 2.5% in radius (at most six bisections).
+    Unusable anchors are skipped without changing the starting guess.
 
     Masked flux moments give the first anchor's guess. A circular scan to
     three background RMS sets only the moment aperture, unless an explicit
@@ -257,9 +258,7 @@ def Isophote_Initialize_Sparse(IMG, results, options):
         if node is None:
             if fixed_outer and radius == max_radius:
                 raise ValueError("Sparse initialization cannot fit the outermost anchor.")
-            logging.warning("Insufficient samples for initialization at %.2f pixels.", radius)
-            if not fixed_outer:
-                break
+            logging.warning("Skipping initialization anchor at %.2f pixels: insufficient samples.", radius)
         else:
             if not fixed_outer and node["level"] < limit:
                 if anchors:
