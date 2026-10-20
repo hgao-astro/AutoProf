@@ -1379,10 +1379,13 @@ def Isophote_Fit_FFT_Robust(IMG, results, options):
 
         for i in I:
             perturbations = []
-            perturbations.append(deepcopy(parameters))
+            perturbations.append(list(parameters))
+            perturbations[-1][i] = deepcopy(parameters[i])
             perturbations[-1][i]["loss"] = loss(perturbations[-1], i)
             for n in range(N_perturb):
-                perturbations.append(deepcopy(parameters))
+                perturbations.append(list(parameters))
+                # Only this radius changes; isolate its mutable Fourier arrays.
+                perturbations[-1][i] = deepcopy(parameters[i])
                 if count % param_cycle < 2:
                     perturbations[-1][i]["ellip"], perturbations[-1][i]["pa"] = _perturb_ellipse(
                         perturbations[-1][i]["ellip"],
@@ -1420,7 +1423,7 @@ def Isophote_Fit_FFT_Robust(IMG, results, options):
             losses = list(p[i]["loss"] for p in perturbations)
             best = _best_finite_index(losses)
             if best > 0:
-                parameters = deepcopy(perturbations[best])
+                parameters[i] = perturbations[best][i]
                 del parameters[i]["loss"]
                 count_nochange = 0
             else:
