@@ -193,6 +193,8 @@ def Isophote_Initialize_Sparse(IMG, results, options):
     background RMS falls below ``ap_isoinit_limit`` (default 3). Anchors
     start at three PSF FWHM, double in radius, and refine the threshold
     crossing to within 2.5% in radius (at most six bisections).
+    Crossings within a radius factor sqrt(2) of the last anchor retain
+    that anchor without further refinement.
     Unusable anchors are skipped without changing the starting guess.
 
     Masked flux moments give the first anchor's guess. A circular scan to
@@ -263,9 +265,11 @@ def Isophote_Initialize_Sparse(IMG, results, options):
             if not fixed_outer and node["level"] < limit:
                 if anchors:
                     lower, upper = anchors[-1], node
+                    min_outer_radius = np.sqrt(2) * anchors[-1]["radius"]
                     # Refine the endpoint; intermediate probes are not anchors.
                     for _ in range(6):
-                        if upper["radius"] / lower["radius"] < 1.025:
+                        if (upper["radius"] <= min_outer_radius
+                                or upper["radius"] / lower["radius"] < 1.025):
                             break
                         mid = _fit_sparse_anchor(
                             dat, np.sqrt(lower["radius"] * upper["radius"]),
@@ -278,6 +282,8 @@ def Isophote_Initialize_Sparse(IMG, results, options):
                             upper = mid
                         else:
                             lower = mid
+                    if upper["radius"] <= min_outer_radius:
+                        break
                     node = upper
                 anchors.append(node)
                 break

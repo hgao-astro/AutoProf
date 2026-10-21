@@ -728,7 +728,8 @@ ap_isoinit_limit (float, default 3)
 
 Stop sparse initialization when the median sky-subtracted intensity along
 the fitted ellipse falls below this many background RMS. Must be positive.
-The previous anchor seeds each fit; the threshold crossing is refined in radius.
+The previous anchor seeds each fit. Crossings within a radius factor sqrt(2)
+retain that anchor; otherwise the crossing is refined.
 Independent of ``ap_fit_limit``; the legacy default initializer still uses that value plus one.
 
 ap_isoinit_ellip_set (float, default None)
