@@ -306,7 +306,12 @@ def _determine_sample_radii(
     interp_method="bilinear",
     rad_interp=None,
 ):
-    """Select radii up to, but excluding, the first below-threshold sample."""
+    """Select radii by brightness, or by an explicit maximum semimajor axis."""
+    max_radius = options.get("ap_isofit_maxR")
+    if max_radius is not None:
+        max_radius = float(max_radius)
+        if not np.isfinite(max_radius) or max_radius <= 0:
+            raise ValueError("ap_isofit_maxR must be finite and positive, or None.")
     ellip_max = _resolve_ellip_max(options)
     shrink = 0
     while shrink < 5:
@@ -315,26 +320,28 @@ def _determine_sample_radii(
         kwargs = {"interp_method": interp_method}
         if rad_interp is not None:
             kwargs["rad_interp"] = rad_interp
-        while radius < (max(IMG.shape) / 2):
-            ellip, pa = _initial_ellipse_profile(radius, results, ellip_max)
-            isovals = _finite_isophote_samples(
-                _iso_extract_with_interp_cutoff(
-                    dat,
-                    radius,
-                    {"ellip": ellip, "pa": pa},
-                    results["center"],
-                    more=False,
-                    mask=mask,
-                    **kwargs,
+        while (radius < (max(IMG.shape) / 2)
+               and (max_radius is None or radius <= max_radius)):
+            if max_radius is None:
+                ellip, pa = _initial_ellipse_profile(radius, results, ellip_max)
+                isovals = _finite_isophote_samples(
+                    _iso_extract_with_interp_cutoff(
+                        dat,
+                        radius,
+                        {"ellip": ellip, "pa": pa},
+                        results["center"],
+                        more=False,
+                        mask=mask,
+                        **kwargs,
+                    )
                 )
-            )
-            if (
-                len(isovals) > 0
-                and average_func(isovals)
-                < (options["ap_fit_limit"] if "ap_fit_limit" in options else fit_limit_default)
-                * results["background noise"]
-            ):
-                break
+                if (
+                    len(isovals) > 0
+                    and average_func(isovals)
+                    < (options["ap_fit_limit"] if "ap_fit_limit" in options else fit_limit_default)
+                    * results["background noise"]
+                ):
+                    break
             sample_radii.append(radius)
             radius *= 1.0 + scale / (1.0 + shrink)
         if len(sample_radii) < 15:
@@ -342,6 +349,8 @@ def _determine_sample_radii(
         else:
             break
     if shrink >= 5:
+        if max_radius is not None:
+            raise ValueError("Too few sampling radii within ap_isofit_maxR to initialize ellipse fitting.")
         raise Exception(
             "Unable to initialize ellipse fit, check diagnostic plots. Possible missed center."
         )
@@ -441,6 +450,10 @@ def Isophote_Fit_FixedPhase(IMG, results, options):
       noise level out to which to extend the fit in units of pixel
       background noise level. Default is 1, smaller values will end
       fitting further out in the galaxy image.
+
+    ap_isofit_maxR : float, default None
+      Maximum fitted semimajor axis in pixels. Overrides ap_fit_limit;
+      use grid radii at or below this value, subject to image bounds.
 
     ap_isofit_interpolate_method : string, default 'bilinear'
       Select method for flux interpolation while determining the
@@ -1107,6 +1120,10 @@ def Isophote_Fit_FFT_Robust(IMG, results, options):
       noise level out to which to extend the fit in units of pixel
       background noise level. Default is 1, smaller values will end
       fitting further out in the galaxy image.
+
+    ap_isofit_maxR : float, default None
+      Maximum fitted semimajor axis in pixels. Overrides ap_fit_limit;
+      use grid radii at or below this value, subject to image bounds.
 
     ap_regularize_scale : float, default 4 for harmonic fitting, 1 otherwise
       Additive shape penalty for Q2; multiplicative penalty for FFT fitting.
@@ -1804,6 +1821,10 @@ def Isophote_Fit_FFT_mean(IMG, results, options):
       noise level out to which to extend the fit in units of pixel
       background noise level. Default is 1, smaller values will end
       fitting further out in the galaxy image.
+
+    ap_isofit_maxR : float, default None
+      Maximum fitted semimajor axis in pixels. Overrides ap_fit_limit;
+      use grid radii at or below this value, subject to image bounds.
 
     ap_regularize_scale : float, default 1
       Scale of the distance between neighbouring log-q shape vectors.

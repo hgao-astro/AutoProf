@@ -158,7 +158,8 @@ ap_fit_limit (float, default 1)
 Brightness limit in units of pixel background RMS; smaller values extend fitting
 farther out. Grid selection checks from the innermost radius and excludes the
 first below-threshold radius, even inside the outermost initialization anchor.
-This check uses the initial geometry, before optimization.
+This check uses the initial geometry, before optimization. Setting
+``ap_isofit_maxR`` overrides this threshold for fitting-grid selection.
 
 ap_fluxunits (str, default "mag")
 ----------------------------------------------------------------------
@@ -630,6 +631,22 @@ listed FFT coefficients. Must be a tuple, not a list.
 Ordinary bilinear ellipse fits with mode 2 use the direct harmonic Q2 objective;
 other modes retain the FFT objective.
 
+ap_isofit_maxR (float, default None)
+----------------------------------------------------------------------
+
+**Referencing Methods**
+
+- :func:`~autoprof.pipeline_steps.Isophote_Fit.Isophote_Fit_FFT_Robust`
+- :func:`~autoprof.pipeline_steps.Isophote_Fit.Isophote_Fit_FFT_mean`
+- :func:`~autoprof.pipeline_steps.Isophote_Fit.Isophote_Fit_FixedPhase`
+
+**Description**
+
+Maximum fitted semimajor axis in pixels; must be finite and positive.
+Overrides ``ap_fit_limit``, retaining grid radii at or below this value.
+Image bounds and coverage checks still apply. Independent of initialization
+and profile-extraction limits; None retains brightness-based stopping.
+
 ap_isofit_perturbscale_ellip (float, default 0.03)
 ----------------------------------------------------------------------
 
@@ -714,8 +731,9 @@ ap_isoinit_R_set (float, default None)
 **Description**
 
 User set initial semi-major axis length, will override the calculation.
-For sparse initialization, this is the exact outermost anchor and overrides
-``ap_isoinit_limit``.
+For sparse initialization, this requests the exact outermost anchor and overrides
+``ap_isoinit_limit``. If unusable, the last successful inner anchor is used with
+a warning; initialization fails if no anchors are usable.
 
 ap_isoinit_limit (float, default 3)
 ----------------------------------------------------------------------

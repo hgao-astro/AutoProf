@@ -188,9 +188,10 @@ def _fit_sparse_anchor(dat, radius, guess, center, variance, mask, noise, ellip_
 def Isophote_Initialize_Sparse(IMG, results, options):
     """Initialize a radial geometry profile from sparse independent isophotes.
 
-    ``ap_isoinit_R_set`` is the outermost anchor, fitted at exactly that
-    radius. Otherwise, stop when the fitted ellipse's median intensity /
-    background RMS falls below ``ap_isoinit_limit`` (default 3). Anchors
+    ``ap_isoinit_R_set`` requests an exact outermost anchor, falling back
+    to the last usable inner anchor if it fails. Otherwise, stop when the
+    fitted ellipse's median intensity / background RMS falls below
+    ``ap_isoinit_limit`` (default 3). Anchors
     start at three PSF FWHM, double in radius, and refine the threshold
     crossing to within 2.5% in radius (at most six bisections).
     Crossings within a radius factor sqrt(2) of the last anchor retain
@@ -258,9 +259,13 @@ def Isophote_Initialize_Sparse(IMG, results, options):
         node = _fit_sparse_anchor(dat, radius, guess, results["center"], variance,
                                   mask, results["background noise"], ellip_max)
         if node is None:
-            if fixed_outer and radius == max_radius:
-                raise ValueError("Sparse initialization cannot fit the outermost anchor.")
-            logging.warning("Skipping initialization anchor at %.2f pixels: insufficient samples.", radius)
+            if fixed_outer and radius == max_radius and anchors:
+                logging.warning(
+                    "Cannot fit requested initialization radius %.2f pixels; using last usable anchor at %.2f pixels.",
+                    radius, anchors[-1]["radius"],
+                )
+            else:
+                logging.warning("Skipping initialization anchor at %.2f pixels: insufficient samples.", radius)
         else:
             if not fixed_outer and node["level"] < limit:
                 if anchors:
