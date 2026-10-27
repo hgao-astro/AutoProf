@@ -505,6 +505,8 @@ Polar-angle harmonics use unmasked pixels and propagated
 mean errors. Returned ``fit band lower R`` and ``fit band upper R`` give the
 radial support (equal to ``fit R`` for lines). Only ordinary harmonic fits
 support bands. None retains line sampling; sparse initialization stays on lines.
+Harmonic fits require five valid line samples or occupied sectors, plus
+angular-gap and numerical-conditioning checks.
 
 ap_isofit_fitcoefs (tuple, default None)
 ----------------------------------------------------------------------
@@ -734,6 +736,7 @@ User set initial semi-major axis length, will override the calculation.
 For sparse initialization, this requests the exact outermost anchor and overrides
 ``ap_isoinit_limit``. If unusable, the last successful inner anchor is used with
 a warning; initialization fails if no anchors are usable.
+This does not enlarge the inner aperture used for the initial flux moments.
 
 ap_isoinit_limit (float, default 3)
 ----------------------------------------------------------------------
@@ -748,6 +751,9 @@ Stop sparse initialization when the median sky-subtracted intensity along
 the fitted ellipse falls below this many background RMS. Must be positive.
 The previous anchor seeds each fit. Crossings within a radius factor sqrt(2)
 retain that anchor; otherwise the crossing is refined.
+The flux-moment guess uses a separate three-RMS circular brightness check,
+searching inward from approximately six PSF FWHM, with an outward fallback
+for an unusable inner region.
 Independent of ``ap_fit_limit``; the legacy default initializer still uses that value plus one.
 
 ap_isoinit_ellip_set (float, default None)
@@ -980,7 +986,7 @@ ap_sampleendR (float, default None)
 **Description**
 
 Maximum sampling radius in pixels for normal and forced extraction.
-Overrides *ap_extractfull* and the default three-times-fit-radius limit.
+Overrides *ap_extractfull* and the default extraction extent.
 When set, all pipeline steps use a square cutout extending twice this radius
 from the supplied/forced center (or image center), clipped at image edges.
 Background statistics use the whole cutout, respecting masks. Input masks
@@ -998,11 +1004,21 @@ ap_samplegeometricscale (float, default ap_scale)
 
 Growth scale for geometric sampling of the final profile. Unless explicitly
 set, inherits ``ap_scale`` (normally 0.2).
-When equal to ``ap_scale``, reuse fitted radii and extend outward from the
-last fitted radius. An explicit ``ap_sampleinitR`` not at a fitted radius retains
-its own grid. Geometry is copied at matching radii; between them, interpolate
+When equal to ``ap_scale``, reuse the complete candidate fitting grid, including
+inactive radii, then extend outward. An explicit ``ap_sampleinitR`` off this grid
+retains its own grid. Geometry is copied at fitted radii; between them, interpolate
 ``-ln(b/a) exp(2j PA)`` linearly in log radius. Hold endpoint geometry outside
-the fitted range.
+the fitted range. Integer ``geometry_source`` codes are:
+
+- 0: fitted geometry.
+- 1: interpolated geometry at an extraction resampling radius.
+- 2: held endpoint geometry at an extraction resampling radius.
+- 3: inactive fitting-grid radius, interpolated geometry.
+- 4: inactive fitting-grid radius, held endpoint geometry.
+
+These describe geometry provenance, not optimizer convergence. The default
+extraction limit includes the full candidate grid; an explicit
+``ap_sampleendR`` still takes precedence.
 
 ap_sampleinitR (float, default None)
 ----------------------------------------------------------------------
@@ -1015,7 +1031,7 @@ ap_sampleinitR (float, default None)
 
 Starting radius (in pixels) for isophote sampling from the
 image. Note that a starting radius of zero is not
-advised. Default is the first fitted radius when reusing the fitted grid;
+advised. Default is the first candidate radius when reusing the fitting grid;
 otherwise min(1 pixel, half the PSF FWHM).
 
 ap_samplelinearscale (float, default None)

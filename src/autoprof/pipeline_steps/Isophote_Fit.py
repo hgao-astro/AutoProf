@@ -406,6 +406,7 @@ def Photutils_Fit(IMG, results, options):
     isolist = ellipse.fit_image(fix_center=True, linear=False)
     res = {
         "fit R": isolist.sma[1:],
+        "fit R grid": isolist.sma[1:],
         "fit ellip": isolist.eps[1:],
         "fit ellip_err": isolist.ellip_err[1:],
         "fit pa": isolist.pa[1:],
@@ -532,6 +533,7 @@ def Isophote_Fit_FixedPhase(IMG, results, options):
         "fit ellip": ellip,
         "fit pa": pa,
         "fit R": sample_radii,
+        "fit R grid": sample_radii,
         "auxfile fitlimit": "fit limit semi-major axis: %.2f pix" % sample_radii[-1],
     }
 
@@ -638,7 +640,7 @@ def _harmonic_band_operator(dat, radius, params, center, variance, mask, return_
     if mask is not None:
         good &= ~mask[iy, ix]
     pixels = pixels[good]
-    if len(pixels) < 8:
+    if len(pixels) < 5:
         return None
     x, y = x[good], y[good]
     # Uniform eccentric-anomaly sectors have equal area before masking.
@@ -647,7 +649,7 @@ def _harmonic_band_operator(dat, radius, params, center, variance, mask, return_
     bins = (np.floor(theta * n / (2 * np.pi) + 0.5).astype(int)) % n
     counts = np.bincount(bins, minlength=n)
     occupied = np.flatnonzero(counts)
-    if len(occupied) < 8 or len(occupied) / n < 0.35:
+    if len(occupied) < 5:
         return None
     angles = occupied * 2 * np.pi / n
     if np.max(np.diff(np.r_[angles, angles[0] + 2 * np.pi])) > np.pi + 2 * np.pi / n:
@@ -708,7 +710,7 @@ def _harmonic_ring_operator(dat, radius, params, center, variance, mask, return_
         bad |= mask.ravel()[ids]
     good &= ~np.any(bad, axis=1)
     k = int(np.sum(good))
-    if k < 8 or k / n < 0.35:
+    if k < 5:
         return None
     angles = theta[good]
     if np.max(np.diff(np.r_[angles, angles[0] + 2 * np.pi])) > np.pi + 2 * np.pi / n:
@@ -1598,7 +1600,8 @@ def Isophote_Fit_FFT_Robust(IMG, results, options):
             "%s: Excluded %i fit radii with too few unmasked samples"
             % (options["ap_name"], skipped_fit_radii)
         )
-    sample_radii = np.asarray(sample_radii)[active_indices]
+    fit_grid = np.asarray(sample_radii).copy()
+    sample_radii = fit_grid[active_indices]
     parameters = list(parameters[i] for i in active_indices)
 
     logging.info("%s: Completed isohpote fit in %i itterations" % (options["ap_name"], count))
@@ -1632,6 +1635,7 @@ def Isophote_Fit_FFT_Robust(IMG, results, options):
         "fit ellip": np.array(list(parameters[i]["ellip"] for i in range(len(parameters)))),
         "fit pa": np.array(list(parameters[i]["pa"] for i in range(len(parameters)))),
         "fit R": sample_radii,
+        "fit R grid": fit_grid,
         "fit ellip_err": ellip_err,
         "fit pa_err": pa_err,
         "fit band start": band_start,
@@ -1744,6 +1748,7 @@ def Isophote_Fit_Forced(IMG, results, options):
         "fit pa": np.array(force["pa"]) * np.pi / 180,
         "fit R": list(np.array(force["R"]) / options["ap_pixscale"]),
     }
+    res["fit R grid"] = res["fit R"]
     if "ellip_e" in force and "pa_e" in force:
         res["fit ellip_err"] = np.array(force["ellip_e"])
         res["fit pa_err"] = np.array(force["pa_e"]) * np.pi / 180
@@ -2033,7 +2038,8 @@ def Isophote_Fit_FFT_mean(IMG, results, options):
             "%s: Excluded %i fit radii with too few unmasked samples"
             % (options["ap_name"], skipped_fit_radii)
         )
-    sample_radii = np.asarray(sample_radii)[active_indices]
+    fit_grid = np.asarray(sample_radii).copy()
+    sample_radii = fit_grid[active_indices]
     ellip = ellip[active_indices]
     pa = pa[active_indices]
     # detect collapsed center
@@ -2136,6 +2142,7 @@ def Isophote_Fit_FFT_mean(IMG, results, options):
         "fit ellip": ellip,
         "fit pa": pa,
         "fit R": sample_radii,
+        "fit R grid": fit_grid,
         "fit ellip_err": ellip_err,
         "fit pa_err": pa_err,
         "auxfile fitlimit": "fit limit semi-major axis: %.2f pix" % sample_radii[-1],

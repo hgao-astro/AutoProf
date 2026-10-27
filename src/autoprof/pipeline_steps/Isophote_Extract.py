@@ -594,6 +594,10 @@ def _Generate_Profile(IMG, results, R, parameters, options, forced_sampling_meth
         params.append("sampling_method")
         SBprof_units["sampling_method"] = "none"
         SBprof_data["sampling_method"] = list(sample_labels[:end_prof])
+    if "geometry source" in parameters[0]:
+        params.append("geometry_source")
+        SBprof_units["geometry_source"] = "none"
+        SBprof_data["geometry_source"] = [p["geometry source"] for p in parameters[:end_prof]]
 
     if "ap_iso_measurecoefs" in options and not options["ap_iso_measurecoefs"] is None:
         whichcoefs = [0] + list(options["ap_iso_measurecoefs"])
@@ -823,7 +827,7 @@ def Isophote_Extract_Forced(IMG, results, options):
             except ValueError:
                 continue  # Skip non-numeric rows
             for d, h in zip(D, header):
-                if h == "sampling_method":
+                if h in ("sampling_method", "geometry_source"):
                     force[h].append(d.strip())
                 else:
                     force[h].append(float(d.strip()))
@@ -899,11 +903,13 @@ def Isophote_Extract(IMG, results, options):
     sampling arguments for the photometry extraction.  For example, a
     start or end radius in pixels, or whether to sample geometrically or
     linearly in radius.  Geometric sampling is the default as it is
-    faster. Matching geometric steps reuse the fitted radii, unless an
-    explicit starting radius selects a different grid, then extend outward.
+    faster. Matching geometric steps reuse the full candidate fitting grid,
+    unless an explicit starting radius selects a different grid, then extend outward.
     Fitted geometry is copied at matching radii. Between fitted
     radii, the joint shape -ln(b/a) exp(2j PA) is interpolated linearly in
     log radius. Outside the fitted range, the nearest endpoint is held fixed.
+    ``geometry_source`` codes are 0: fitted, 1: interpolated, 2: endpoint held,
+    3: inactive fit radius interpolated, 4: inactive fit radius endpoint held.
 
     Parameters
     -----------------
@@ -922,8 +928,8 @@ def Isophote_Extract(IMG, results, options):
       growth scale for isophotes when sampling for the final output
       profile. Used when sampling geometrically. Inherits *ap_scale*
       (normally 0.2) unless explicitly set. When equal to *ap_scale*,
-      reuse fitted radii and extend outward from the last fitted radius.
-      An explicit *ap_sampleinitR* not at a fitted radius retains its own grid.
+      reuse the candidate fitting grid and extend outward.
+      An explicit *ap_sampleinitR* off this grid retains its own grid.
 
     ap_samplelinearscale : float, default None
       growth scale (in pixels) for isophotes when sampling for the
@@ -939,12 +945,12 @@ def Isophote_Extract(IMG, results, options):
     ap_sampleinitR : float, default None
       Starting radius (in pixels) for isophote sampling from the
       image. Note that a starting radius of zero is not
-      advised. Default is the first fitted radius when reusing the fitted
+      advised. Default is the first candidate radius when reusing the fitting
       grid; otherwise min(1 pixel, half the PSF FWHM).
 
     ap_sampleendR : float, default None
       Maximum sampling radius in pixels, overriding *ap_extractfull* and
-      the default three-times-fit-radius limit.
+      the default extraction extent.
 
     ap_isoband_start : float, default ap_isofit_band_start
       The noise level at which to begin sampling a band of pixels to
@@ -1087,22 +1093,23 @@ def Isophote_Extract(IMG, results, options):
     """
     ellip_max = _resolve_ellip_max(options)
     fit_R = np.asarray(results["fit R"])
+    grid_R = np.asarray(results.get("fit R grid", fit_R))
     sample_scale = options.get("ap_samplegeometricscale", options.get("ap_scale", 0.2))
     reuse_fit_grid = (
         options.get("ap_samplestyle", "geometric") == "geometric"
         and np.isclose(sample_scale, options.get("ap_scale", 0.2), rtol=1e-10, atol=0)
     )
     if reuse_fit_grid and "ap_sampleinitR" in options:
-        start_index = np.argmin(np.abs(fit_R - options["ap_sampleinitR"]))
+        start_index = np.argmin(np.abs(grid_R - options["ap_sampleinitR"]))
         reuse_fit_grid = np.isclose(
-            fit_R[start_index], options["ap_sampleinitR"], rtol=1e-10, atol=0
+            grid_R[start_index], options["ap_sampleinitR"], rtol=1e-10, atol=0
         )
     else:
         start_index = 0
 
     # Radius values to evaluate isophotes
     R = [
-        fit_R[start_index] if reuse_fit_grid else (
+        grid_R[start_index] if reuse_fit_grid else (
             options["ap_sampleinitR"]
             if "ap_sampleinitR" in options
             else min(1.0, results["psf fwhm"] / 2)
@@ -1110,12 +1117,12 @@ def Isophote_Extract(IMG, results, options):
     ]
     sample_end = options.get("ap_sampleendR")
     endR = sample_end if sample_end is not None else (
-        np.inf if options.get("ap_extractfull", False) else 3 * fit_R[-1]
+        np.inf if options.get("ap_extractfull", False) else max(grid_R[-1], 3 * fit_R[-1])
     )
     endR = min(endR, max(IMG.shape) / np.sqrt(2))
     while R[-1] < endR:
-        if reuse_fit_grid and R[-1] < fit_R[-1]:
-            R.append(fit_R[np.searchsorted(fit_R, R[-1], side="right")])
+        if reuse_fit_grid and R[-1] < grid_R[-1]:
+            R.append(grid_R[np.searchsorted(grid_R, R[-1], side="right")])
         elif "ap_samplestyle" in options and options["ap_samplestyle"] == "geometric-linear":
             if len(R) > 1 and abs(R[-1] - R[-2]) >= (
                 options["ap_samplelinearscale"]
@@ -1151,9 +1158,10 @@ def Isophote_Extract(IMG, results, options):
 
     indices = np.searchsorted((fit_R[:-1] + fit_R[1:]) / 2, R)
     # Allow rounding differences between independently constructed radius grids.
+    matched = np.isclose(R, fit_R[indices], rtol=1e-10, atol=0)
     interpolate = (
         (R > fit_R[0]) & (R < fit_R[-1])
-        & ~np.isclose(R, fit_R[indices], rtol=1e-10, atol=0)
+        & ~matched
     )
     fitted_ellip = np.clip(results["fit ellip"], 0.0, ellip_max)
     fitted_pa = np.asarray(results["fit pa"], dtype=float)
@@ -1164,7 +1172,17 @@ def Isophote_Extract(IMG, results, options):
         trial = np.interp(np.log(R[interpolate]), np.log(fit_R), shape)
         E[interpolate] = _logq_to_ellip(np.abs(trial), ellip_max)
         PA[interpolate] = (np.angle(trial) / 2) % np.pi
-    parameters = list({"ellip": E[i], "pa": PA[i]} for i in range(len(R)))
+    geometry_sources = np.full(len(R), 2, dtype=int)
+    geometry_sources[matched] = 0
+    geometry_sources[interpolate] = 1
+    grid_indices = np.searchsorted((grid_R[:-1] + grid_R[1:]) / 2, R)
+    inactive = ~matched & np.isclose(R, grid_R[grid_indices], rtol=1e-10, atol=0)
+    geometry_sources[inactive & interpolate] = 3
+    geometry_sources[inactive & ~interpolate] = 4
+    parameters = [
+        {"ellip": E[i], "pa": PA[i], "geometry source": geometry_sources[i]}
+        for i in range(len(R))
+    ]
 
     if "fit Fmodes" in results:
         for i in range(len(R)):

@@ -79,6 +79,7 @@ def _nearest_finite_fill(IMG, bad, context="image"):
 
 
 def _spline_fill_nonfinite(IMG, options=None, max_spline_points=50000):
+    """Fill missing pixels, falling back if the spline fails or overshoots the data."""
     bad = np.logical_not(np.isfinite(IMG))
     if not np.any(bad):
         return IMG
@@ -123,11 +124,16 @@ def _spline_fill_nonfinite(IMG, options=None, max_spline_points=50000):
 
     try:
         with warnings.catch_warnings():
-            warnings.simplefilter("ignore", UserWarning)
+            # Unsuccessful spline fits can still return finite, extreme values.
+            warnings.simplefilter("error", UserWarning)
             spline = SmoothBivariateSpline(x_fit, y_fit, z_fit, kx=kx, ky=ky)
         fill_values = spline.ev(x_bad, y_bad)
         if not np.all(np.isfinite(fill_values)):
             raise ValueError("Spline produced non-finite fill values")
+        lower, upper = np.min(z), np.max(z)
+        tolerance = 1e-12 * max(abs(lower), abs(upper))
+        if np.any(fill_values < lower - tolerance) or np.any(fill_values > upper + tolerance):
+            raise ValueError("Spline fill exceeds the observed intensity range")
         filled[bad] = fill_values
         return filled
     except Exception as e:

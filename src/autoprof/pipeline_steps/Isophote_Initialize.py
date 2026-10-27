@@ -133,6 +133,59 @@ def _select_init_radius(test_ellip, loss_func, dat, radius, phase, center, noise
     return radius, test_f2
 
 
+def _moment_circle_brightness(dat, radius, center, mask):
+    flux, _, choose, _ = _iso_extract_with_interp_cutoff(
+        dat, radius, {"ellip": 0.0, "pa": 0.0}, center,
+        more=True, mask=mask, return_choose=True, interp_method="bilinear",
+    )
+    if np.count_nonzero(choose) < 5:
+        return None
+    return np.quantile(flux[choose], 0.8)
+
+
+def _flux_moment_aperture(dat, center, mask, limit, max_radius, noise):
+    """Search inward from the moment cap; estimate only bracketed brightness."""
+    radii = [min(1.2, limit)]
+    while radii[-1] < limit:
+        radii.append(min(radii[-1] * 1.2, limit))
+    threshold = 3 * noise
+    level = _moment_circle_brightness(dat, limit, center, mask)
+    if level is not None and level >= threshold:
+        return limit
+    outer = (limit, level) if level is not None else None
+    if outer is None:
+        radius = limit
+        while radius < max_radius:
+            radius = min(radius * 1.2, max_radius)
+            value = _moment_circle_brightness(dat, radius, center, mask)
+            if value is not None:
+                outer = (radius, value)
+                break
+    pending = [limit] if level is None else []
+    usable_inner = int(level is not None)
+    for radius in reversed(radii[:-1]):
+        value = _moment_circle_brightness(dat, radius, center, mask)
+        if value is None:
+            pending.append(radius)
+            continue
+        usable_inner += 1
+        if outer is not None:
+            outer_radius, outer_value = outer
+            # Only estimate missing circular brightness, never missing image light.
+            for missing in pending:
+                weight = np.log(missing / radius) / np.log(outer_radius / radius)
+                if value + weight * (outer_value - value) >= threshold:
+                    return missing
+        if value >= threshold:
+            return radius
+        outer = (radius, value)
+        pending = []
+    # Use an outer aperture only if no inner circle is usable.
+    if usable_inner == 0 and outer is not None and outer[1] >= threshold:
+        return outer[0]
+    return None
+
+
 def _flux_moment_shape(dat, center, radius, mask, ellip_max):
     """Flux moments about the supplied center, within a circular aperture."""
     y, x = np.ogrid[:dat.shape[0], :dat.shape[1]]
@@ -177,7 +230,7 @@ def _fit_sparse_anchor(dat, radius, guess, center, variance, mask, noise, ellip_
         dat, radius, {"ellip": guess[0], "pa": guess[1]}, center,
         more=True, mask=mask, return_choose=True, interp_method="bilinear",
     )
-    if not _has_enough_isophote_coverage(theta, choose):
+    if np.count_nonzero(choose) < 5:
         return None
     if not fit.success:
         logging.warning("Sparse initialization did not converge at %.2f pixels.", radius)
@@ -198,9 +251,10 @@ def Isophote_Initialize_Sparse(IMG, results, options):
     that anchor without further refinement.
     Unusable anchors are skipped without changing the starting guess.
 
-    Masked flux moments give the first anchor's guess. A circular scan to
-    three background RMS sets only the moment aperture, unless an explicit
-    outer radius is supplied. Each subsequent anchor starts from
+    Masked flux moments give the first anchor's guess. Search inward from twice
+    the first anchor radius for brightness above three background RMS; estimate
+    unusable circles only between measured neighbors. Use a larger aperture
+    only if the inner region is unusable. Each subsequent anchor starts from
     the previous fit. Anchors minimize the bilinear harmonic Q2 data loss
     without regularization or angular gap filling. ``ap_isofit_rms`` and
     ``ap_isofit_gain`` follow the ordinary fitter's noise conventions.
@@ -226,27 +280,17 @@ def Isophote_Initialize_Sparse(IMG, results, options):
         max_radius = float(options["ap_isoinit_R_set"])
         if not np.isfinite(max_radius) or max_radius <= 0:
             raise ValueError("ap_isoinit_R_set must be finite and positive.")
-        moment_radius = max_radius
     else:
         limit = options.get("ap_isoinit_limit", 3.0)
         if not np.isfinite(limit) or limit <= 0:
             raise ValueError("ap_isoinit_limit must be finite and positive.")
         max_radius = max(IMG.shape) / 2
-        moment_radius = None
-        radius = 1.0
-        while radius < max_radius:
-            radius = min(radius * 1.2, max_radius)
-            flux, theta, choose, _ = _iso_extract_with_interp_cutoff(
-                dat, radius, {"ellip": 0.0, "pa": 0.0}, results["center"],
-                more=True, mask=mask, return_choose=True, interp_method="bilinear",
-            )
-            if not _has_enough_isophote_coverage(theta, choose):
-                continue
-            moment_radius = radius
-            if radius >= inner and np.quantile(flux[choose], 0.8) < 3 * results["background noise"]:
-                break
-        if moment_radius is None:
-            raise ValueError("Sparse initialization found no usable circular samples.")
+    moment_limit = min(2 * inner, max_radius)
+    moment_radius = _flux_moment_aperture(
+        dat, results["center"], mask, moment_limit, max_radius, results["background noise"]
+    )
+    if moment_radius is None:
+        raise ValueError("Sparse initialization found no usable circular samples above three background RMS.")
     ellip, pa = _flux_moment_shape(dat, results["center"], moment_radius, mask, ellip_max)
     if "ap_isoinit_ellip_set" in options:
         ellip = float(np.clip(options["ap_isoinit_ellip_set"], 0.0, ellip_max))
