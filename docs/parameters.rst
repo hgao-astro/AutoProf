@@ -1032,14 +1032,16 @@ ap_sampleinitR (float, default None)
 
 Starting radius (in pixels) for extraction. By default (or when zero), add
 an R=0 bilinear intensity measurement with NaN geometry and harmonic terms.
-A positive value excludes this central row. Positive radii begin at the first
-candidate radius when reusing the fitting grid; otherwise at
-min(1 pixel, half the PSF FWHM).
+A positive value sets the starting radius and excludes this central row.
+By default, extend a reused fitting grid inward with geometric spacing to
+0.5 pixel, independent of PSF FWHM, holding the innermost fitted geometry.
+Existing grid radii are retained; new grids start at this minimum.
 
 The central intensity error propagates the supplied total RMS map, or background
 noise plus optional gain-based source noise. Masked/invalid interpolation support
 leaves the measurement unavailable. Enclosed flux at R=0 is zero (magnitude
-undefined); positive-radius measurements and their cumulative flux are unchanged.
+undefined). The added positive inner radii contribute to the cumulative flux;
+the R=0 point itself is excluded from that integration.
 
 ap_samplelinearscale (float, default None)
 ----------------------------------------------------------------------
