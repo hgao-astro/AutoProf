@@ -331,9 +331,7 @@ def _Plot_Isophotes(dat, R, parameters, results, options):
     AddScale(plt.gca(), (ranges[0][1] - ranges[0][0]) * options["ap_pixscale"])
 
     fitlim = results["fit R"][-1] if "fit R" in results else np.inf
-    for i in range(len(R)):
-        if R[i] == 0:
-            continue  # Central intensity is not an ellipse.
+    for i in np.flatnonzero(np.asarray(R) > 0)[::2]:
         N = max(15, int(0.9 * 2 * np.pi * R[i]))
         theta = np.linspace(0, 2 * np.pi * (1.0 - 1.0 / N), N)
         theta = np.arctan((1.0 - parameters[i]["ellip"]) * np.tan(theta)) + np.pi * (
