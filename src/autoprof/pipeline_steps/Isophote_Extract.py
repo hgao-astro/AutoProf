@@ -913,11 +913,11 @@ def Isophote_Extract_Forced(IMG, results, options):
     )
     for i in range(len(force["R"])):
         if "ellip_e" in force and "pa_e" in force:
-            parameters[i]["ellip_err"] = force["ellip_e"][i]
-            parameters[i]["pa_err"] = force["pa_e"][i] * np.pi / 180
+            parameters[i]["ellip err"] = force["ellip_e"][i]
+            parameters[i]["pa err"] = force["pa_e"][i] * np.pi / 180
         else:
-            parameters[i]["pa_err"] = 0.0
-            parameters[i]["ellip_err"] = 0.0
+            parameters[i]["pa err"] = 0.0
+            parameters[i]["ellip err"] = 0.0
 
     forced_sampling_methods = (
         force["sampling_method"]

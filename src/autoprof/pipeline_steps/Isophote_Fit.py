@@ -1733,7 +1733,9 @@ def Isophote_Fit_Forced(IMG, results, options):
 
     if not force["R"]:
         raise ValueError("The forcing profile contains no positive-radius geometry.")
-    force["pa"] = PA_shift_convention(np.array(force["pa"]), deg=True)
+    # Use pixels and radians for both the diagnostic plot and returned geometry.
+    force["R"] = np.array(force["R"]) / options["ap_pixscale"]
+    force["pa"] = PA_shift_convention(np.array(force["pa"]), deg=True) * np.pi / 180
 
     if "ap_doplot" in options and options["ap_doplot"]:
         parameters = []
@@ -1749,8 +1751,8 @@ def Isophote_Fit_Forced(IMG, results, options):
 
     res = {
         "fit ellip": np.array(force["ellip"]),
-        "fit pa": np.array(force["pa"]) * np.pi / 180,
-        "fit R": list(np.array(force["R"]) / options["ap_pixscale"]),
+        "fit pa": force["pa"],
+        "fit R": list(force["R"]),
     }
     res["fit R grid"] = res["fit R"]
     if "ellip_e" in force and "pa_e" in force:
