@@ -347,6 +347,8 @@ def Slice_Profile(IMG, results, options):
             results["background noise"]
             if "background noise" in results
             else iqr(dat, rng=(31.731 / 2, 100 - 31.731 / 2)) / 2,
+            mask=mask[ranges[1][0] : ranges[1][1], ranges[0][0] : ranges[0][1]]
+            if mask is not None else None,
         )
 
         XX, YY = np.meshgrid(

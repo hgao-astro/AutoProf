@@ -185,7 +185,7 @@ def Mask_Segmentation_Map(IMG, results, options):
             if "background noise" in results
             else iqr(finite_values, rng=[16, 84]) / 2
         )
-        LSBImage(IMG - bkgrnd, noise)
+        LSBImage(IMG - bkgrnd, noise, mask=mask)
         showmask = np.copy(mask)
         showmask[showmask > 1] = 1
         showmask[showmask < 1] = np.nan
@@ -430,6 +430,7 @@ def Star_Mask(IMG, results, options):
         LSBImage(
             dat[ybounds[0] : ybounds[1], xbounds[0] : xbounds[1]],
             results["background noise"],
+            mask=mask[ybounds[0] : ybounds[1], xbounds[0] : xbounds[1]],
         )
         dat = mask.astype(float)[ybounds[0] : ybounds[1], xbounds[0] : xbounds[1]]
         dat[dat == 0] = np.nan

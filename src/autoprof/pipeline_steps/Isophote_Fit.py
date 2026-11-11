@@ -2077,6 +2077,8 @@ def Isophote_Fit_FFT_mean(IMG, results, options):
         LSBImage(
             dat[ranges[1][0] : ranges[1][1], ranges[0][0] : ranges[0][1]],
             results["background noise"],
+            mask=results["mask"][ranges[1][0] : ranges[1][1], ranges[0][0] : ranges[0][1]]
+            if results.get("mask") is not None else None,
         )
         # plt.imshow(np.clip(dat[ranges[1][0]: ranges[1][1], ranges[0][0]: ranges[0][1]],
         #                    a_min = 0,a_max = None), origin = 'lower', cmap = 'Greys', norm = ImageNormalize(stretch=LogStretch()))

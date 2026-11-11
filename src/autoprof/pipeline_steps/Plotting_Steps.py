@@ -111,6 +111,8 @@ def Plot_Galaxy_Image(IMG, results, options):
         IMG[ranges[1][0] : ranges[1][1], ranges[0][0] : ranges[0][1]]
         - results["background"],
         results["background noise"],
+        mask=results["mask"][ranges[1][0] : ranges[1][1], ranges[0][0] : ranges[0][1]]
+        if results.get("mask") is not None else None,
     )
     if not ("ap_nologo" in options and options["ap_nologo"]):
         AddLogo(plt.gcf())

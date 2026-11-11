@@ -7,8 +7,7 @@ from scipy.fftpack import fft, ifft
 from scipy.optimize import minimize
 from scipy.signal import convolve2d
 from scipy.ndimage import distance_transform_edt, label
-from astropy.visualization import SqrtStretch, LogStretch, HistEqStretch
-from astropy.visualization.mpl_normalize import ImageNormalize
+from astropy.visualization import SqrtStretch, LogStretch
 import matplotlib.pyplot as plt
 from astropy.io import fits
 from itertools import compress
@@ -18,7 +17,6 @@ from photutils.isophote import Ellipse as Photutils_Ellipse
 import logging
 from copy import deepcopy, copy
 from time import time
-import matplotlib.cm as cm
 from matplotlib.cbook import get_sample_data
 from matplotlib.colors import LinearSegmentedColormap
 import warnings
@@ -144,52 +142,48 @@ def _spline_fill_nonfinite(IMG, options=None, max_spline_points=50000):
         return _nearest_finite_fill(IMG, bad)
 
 
-def LSBImage(dat, noise):
+def LSBImage(dat, noise, mask=None):
+    """Display background-subtracted data with a faint-linear/bright-log scale.
+
+    Exclude masked pixels from the limits, but keep them visible in the image.
+    """
     plt.figure(figsize=(6, 6))
     dat = np.ma.masked_invalid(dat)
-    finite_values = dat.compressed()
+    finite_values = (dat if mask is None else np.ma.masked_where(mask, dat)).compressed()
+    if finite_values.size == 0 and mask is not None:
+        finite_values = dat.compressed()
+        if finite_values.size:
+            logging.warning("No unmasked pixels for LSB display limits; using finite pixels")
     if finite_values.size == 0:
         logging.warning("Skipping LSB image display; no finite pixels")
-    elif not np.isfinite(noise) or noise <= 0 or np.ptp(finite_values) == 0:
+    elif not np.isfinite(noise) or noise <= 0:
         plt.imshow(
             dat,
             origin="lower",
-            cmap="Greys",
+            cmap="Greys_r",
             vmin=np.min(finite_values),
             vmax=np.max(finite_values),
         )
     else:
-        faint_values = finite_values[finite_values <= 3 * noise]
-        if faint_values.size > 0 and np.ptp(faint_values) > 0:
-            # Sample the CDF for display; quantile spacing retains faint contrast around outliers.
-            stride = max(1, int(np.ceil(faint_values.size / 262144)))
-            quantiles = np.quantile(faint_values[::stride], np.linspace(0, 1, 1025))
-            quantiles[0], quantiles[-1] = np.min(faint_values), np.max(faint_values)
-            plt.imshow(
-                dat,
-                origin="lower",
-                cmap="Greys",
-                norm=ImageNormalize(
-                    stretch=HistEqStretch(quantiles),
-                    clip=False,
-                    vmax=3 * noise,
-                    vmin=np.min(finite_values),
-                ),
-            )
-        bright = np.ma.masked_where(dat < 3 * noise, dat)
-        if bright.count() > 0:
-            my_cmap = copy(cm.Greys_r)
-            my_cmap.set_under("k", alpha=0)
-
-            plt.imshow(
-                bright,
-                origin="lower",
-                cmap=my_cmap,
-                norm=ImageNormalize(
-                    stretch=LogStretch(), clip=False, vmin=3 * noise, vmax=np.max(bright)
-                ),
-                interpolation="none",
-            )
+        # Reserve half the grayscale for [-3, +3] RMS and half for brighter light.
+        display = 0.5 * np.ma.clip((dat + 3 * noise) / (6 * noise), 0, 1)
+        bright = np.ma.filled(dat > 3 * noise, False)
+        if np.any(bright):
+            ceiling = np.max(finite_values)
+            if ceiling > 3 * noise:
+                scaled = (dat[bright] - 3 * noise) / (ceiling - 3 * noise)
+                display[bright] = 0.5 + 0.5 * LogStretch()(scaled)
+            else:
+                # All bright pixels are masked; saturate them without changing the faint scale.
+                display[bright] = 1
+        plt.imshow(
+            display,
+            origin="lower",
+            cmap="Greys_r",
+            vmin=0,
+            vmax=1,
+            interpolation="none",
+        )
     plt.xticks([])
     plt.yticks([])
     plt.subplots_adjust(left=0.03, right=0.97, top=0.97, bottom=0.05)

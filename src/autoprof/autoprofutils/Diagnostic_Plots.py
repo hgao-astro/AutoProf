@@ -75,7 +75,7 @@ def Plot_Background(values, bkgrnd, noise, results, options):
 
 
 def Plot_PSF_Stars(IMG, stars_x, stars_y, stars_fwhm, psf, results, options, flagstars=None):
-    LSBImage(IMG - results["background"], results["background noise"])
+    LSBImage(IMG - results["background"], results["background noise"], mask=results.get("mask"))
     AddScale(plt.gca(), IMG.shape[0] * options["ap_pixscale"])
     for i in range(len(stars_fwhm)):
         plt.gca().add_patch(
@@ -106,6 +106,22 @@ def Plot_PSF_Stars(IMG, stars_x, stars_y, stars_fwhm, psf, results, options, fla
     plt.close()
 
 
+def _plot_mask_overlay(mask, ranges):
+    """Overlay the mask using the same image crop and color across diagnostics."""
+    if mask is None:
+        return
+    mask = mask[ranges[1][0] : ranges[1][1], ranges[0][0] : ranges[0][1]]
+    if np.any(mask):
+        plt.imshow(
+            np.ma.masked_equal(mask, 0),
+            origin="lower",
+            cmap=matplotlib.colors.ListedColormap(["#0072FF"]),
+            alpha=0.6,
+            interpolation="none",
+            zorder=1,
+        )
+
+
 def Plot_Isophote_Init_Ellipse(dat, circ_ellipse_radii, ellip, phase, results, options):
     """Overlay the legacy outer ellipse or a sparse profile of anchor ellipses."""
     ranges = [
@@ -122,7 +138,10 @@ def Plot_Isophote_Init_Ellipse(dat, circ_ellipse_radii, ellip, phase, results, o
     LSBImage(
         dat[ranges[1][0] : ranges[1][1], ranges[0][0] : ranges[0][1]],
         results["background noise"],
+        mask=results["mask"][ranges[1][0] : ranges[1][1], ranges[0][0] : ranges[0][1]]
+        if results.get("mask") is not None else None,
     )
+    _plot_mask_overlay(results.get("mask"), ranges)
     AddScale(plt.gca(), (ranges[0][1] - ranges[0][0]) * options["ap_pixscale"])
     if np.ndim(ellip) == 0:
         radii, ellips, phases = [circ_ellipse_radii[-1]], [ellip], [phase]
@@ -140,7 +159,8 @@ def Plot_Isophote_Init_Ellipse(dat, circ_ellipse_radii, ellip, phase, results, o
                 angle=pa * 180 / np.pi,
                 fill=False,
                 linewidth=1,
-                color=autocolours["blue1"],
+                color=autocolours["red1"],
+                zorder=2,
             )
         )
     plt.plot(
@@ -230,18 +250,10 @@ def Plot_Isophote_Fit(dat, sample_radii, parameters, results, options):
     LSBImage(
         dat[ranges[1][0] : ranges[1][1], ranges[0][0] : ranges[0][1]],
         results["background noise"],
+        mask=results["mask"][ranges[1][0] : ranges[1][1], ranges[0][0] : ranges[0][1]]
+        if results.get("mask") is not None else None,
     )
-    if results.get("mask") is not None:
-        mask = results["mask"][ranges[1][0] : ranges[1][1], ranges[0][0] : ranges[0][1]]
-        if np.any(mask):
-            plt.imshow(
-                np.ma.masked_equal(mask, 0),
-                origin="lower",
-                cmap=matplotlib.colors.ListedColormap(["#0072FF"]),
-                alpha=0.6,
-                interpolation="none",
-                zorder=1,
-            )
+    _plot_mask_overlay(results.get("mask"), ranges)
     AddScale(plt.gca(), (ranges[0][1] - ranges[0][0]) * options["ap_pixscale"])
 
     for i in range(len(sample_radii)):
@@ -312,7 +324,10 @@ def _Plot_Isophotes(dat, R, parameters, results, options):
     LSBImage(
         dat[ranges[1][0] : ranges[1][1], ranges[0][0] : ranges[0][1]],
         results["background noise"],
+        mask=results["mask"][ranges[1][0] : ranges[1][1], ranges[0][0] : ranges[0][1]]
+        if results.get("mask") is not None else None,
     )
+    _plot_mask_overlay(results.get("mask"), ranges)
     AddScale(plt.gca(), (ranges[0][1] - ranges[0][0]) * options["ap_pixscale"])
 
     fitlim = results["fit R"][-1] if "fit R" in results else np.inf
@@ -347,7 +362,7 @@ def _Plot_Isophotes(dat, R, parameters, results, options):
             list(X) + [X[0]],
             list(Y) + [Y[0]],
             linewidth=((i + 1) / len(R)) ** 2,
-            color=autocolours["blue1"] if (i % 4 == 0) else autocolours["red1"],
+            color=autocolours["red1"],
             linestyle="-" if R[i] < fitlim else "--",
         )
     if not ("ap_nologo" in options and options["ap_nologo"]):
@@ -700,6 +715,8 @@ def Plot_Radial_Profiles(dat, R, sb, sbE, pa, nwedges, wedgeangles, wedgewidth, 
     LSBImage(
         dat[ranges[1][0] : ranges[1][1], ranges[0][0] : ranges[0][1]],
         results["background noise"],
+        mask=results["mask"][ranges[1][0] : ranges[1][1], ranges[0][0] : ranges[0][1]]
+        if results.get("mask") is not None else None,
     )
     AddScale(plt.gca(), (ranges[0][1] - ranges[0][0]) * options["ap_pixscale"])
 
@@ -860,6 +877,8 @@ def Plot_Axial_Profiles(dat, R, sb, sbE, pa, results, options):
     LSBImage(
         dat[ranges[1][0] : ranges[1][1], ranges[0][0] : ranges[0][1]],
         results["background noise"],
+        mask=results["mask"][ranges[1][0] : ranges[1][1], ranges[0][0] : ranges[0][1]]
+        if results.get("mask") is not None else None,
     )
     AddScale(plt.gca(), (ranges[0][1] - ranges[0][0]) * options["ap_pixscale"])
     count = 0
