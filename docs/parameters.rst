@@ -452,15 +452,10 @@ ap_isoclip (bool, default False)
 
 **Description**
 
-Perform sigma clipping along extracted isophotes. Removes flux
-samples from an isophote that deviate significantly from the
-median. Several iterations of sigma clipping are performed until
-convergence or *ap_isoclip_iterations* iterations are
-reached. Sigma clipping is a useful substitute for masking
-objects, though careful masking is better. Also an aggressive
-sigma clip may bias results.
+Reject flux samples more than *ap_isoclip_nsigma* standard deviations above or
+below the median during profile extraction. Aggressive clipping may bias photometry.
 
-ap_isoclip_iterations (int, default None)
+ap_isoclip_iterations (int, default 10)
 ----------------------------------------------------------------------
 
 **Referencing Methods**
@@ -470,9 +465,7 @@ ap_isoclip_iterations (int, default None)
 
 **Description**
 
-Maximum number of sigma clipping iterations to perform. The
-default is infinity, so the sigma clipping procedure repeats
-until convergence
+Maximum number of clipping iterations. Set to ``None`` to iterate until convergence.
 
 ap_isoclip_nsigma (float, default 5)
 ----------------------------------------------------------------------
@@ -484,9 +477,7 @@ ap_isoclip_nsigma (float, default 5)
 
 **Description**
 
-Number of sigma above median to apply clipping. All values above
-(median + *ap_isoclip_nsigma* x sigma) are removed from the
-isophote.
+Number of standard deviations from the median allowed on either side.
 
 ap_isofit_band_start (float, default 5)
 ----------------------------------------------------------------------

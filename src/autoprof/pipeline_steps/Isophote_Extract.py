@@ -233,6 +233,7 @@ def _extract_isophote_line_samples(
             else 3
         ),
         sigmaclip=options["ap_isoclip"] if "ap_isoclip" in options else False,
+        sclip_symmetric=True,
         sclip_iterations=(
             options["ap_isoclip_iterations"] if "ap_isoclip_iterations" in options else 10
         ),
@@ -417,6 +418,7 @@ def _Generate_Profile(
                 more=True,
                 include_inner=True,
                 sigmaclip=options["ap_isoclip"] if "ap_isoclip" in options else False,
+                sclip_symmetric=True,
                 sclip_iterations=(
                     options["ap_isoclip_iterations"] if "ap_isoclip_iterations" in options else 10
                 ),
@@ -787,23 +789,14 @@ def Isophote_Extract_Forced(IMG, results, options):
       should always be used with caution.
 
     ap_isoclip : bool, default False
-      Perform sigma clipping along extracted isophotes. Removes flux
-      samples from an isophote that deviate significantly from the
-      median. Several iterations of sigma clipping are performed until
-      convergence or *ap_isoclip_iterations* iterations are
-      reached. Sigma clipping is a useful substitute for masking
-      objects, though careful masking is better. Also an aggressive
-      sigma clip may bias results.
+      Clip both tails of valid line/band samples using the median and standard
+      deviation, as in astropy.stats.sigma_clip.
 
-    ap_isoclip_iterations : int, default None
-      Maximum number of sigma clipping iterations to perform. The
-      default is infinity, so the sigma clipping procedure repeats
-      until convergence
+    ap_isoclip_iterations : int, default 10
+      Maximum clipping iterations; None iterates until convergence.
 
     ap_isoclip_nsigma : float, default 5
-      Number of sigma above median to apply clipping. All values above
-      (median + *ap_isoclip_nsigma* x sigma) are removed from the
-      isophote.
+      Standard deviations allowed on either side of the median.
 
     ap_iso_measurecoefs : tuple, default None
       tuple indicating which fourier modes to extract along fitted
@@ -1069,23 +1062,14 @@ def Isophote_Extract(IMG, results, options):
       should always be used with caution.
 
     ap_isoclip : bool, default False
-      Perform sigma clipping along extracted isophotes. Removes flux
-      samples from an isophote that deviate significantly from the
-      median. Several iterations of sigma clipping are performed until
-      convergence or *ap_isoclip_iterations* iterations are
-      reached. Sigma clipping is a useful substitute for masking
-      objects, though careful masking is better. Also an aggressive
-      sigma clip may bias results.
+      Clip both tails of valid line/band samples using the median and standard
+      deviation, as in astropy.stats.sigma_clip.
 
-    ap_isoclip_iterations : int, default None
-      Maximum number of sigma clipping iterations to perform. The
-      default is infinity, so the sigma clipping procedure repeats
-      until convergence
+    ap_isoclip_iterations : int, default 10
+      Maximum clipping iterations; None iterates until convergence.
 
     ap_isoclip_nsigma : float, default 5
-      Number of sigma above median to apply clipping. All values above
-      (median + *ap_isoclip_nsigma* x sigma) are removed from the
-      isophote.
+      Standard deviations allowed on either side of the median.
 
     ap_iso_measurecoefs : tuple, default None
       tuple indicating which fourier modes to extract along fitted

@@ -10,6 +10,7 @@ from scipy.ndimage import distance_transform_edt, label
 from astropy.visualization import SqrtStretch, LogStretch
 import matplotlib.pyplot as plt
 from astropy.io import fits
+from astropy.stats import sigma_clip
 from itertools import compress
 import numpy as np
 from photutils.isophote import EllipseSample, EllipseGeometry, Isophote, IsophoteList
@@ -494,6 +495,26 @@ def Sigma_Clip_Upper(v, iterations=10, nsigma=5):
     return lim
 
 
+def _sigma_clip_samples(flux, choose, iterations, nsigma, symmetric):
+    """Return a clipping selection aligned with the original flux samples."""
+    if symmetric:
+        samples = flux[choose]
+        clipped, lower, upper = sigma_clip(
+            samples, sigma=nsigma, cenfunc="median", stdfunc="std", maxiters=iterations,
+            masked=False, return_bounds=True,
+        )
+        choose = choose.copy()
+        # Astropy's masked output can restore samples when empty iterations yield NaN bounds.
+        choose[choose] = (samples >= lower) & (samples <= upper) if clipped.size else False
+    elif np.any(choose):
+        # Preserve the legacy upper-only rule for non-extraction callers.
+        limit = Sigma_Clip_Upper(flux[choose], iterations, nsigma)
+        clipped_choose = choose & (flux < limit)
+        if np.any(clipped_choose):
+            choose = clipped_choose
+    return choose
+
+
 def Smooth_Mode(v):
     # set the starting point for the optimization at the median
     start = np.median(v)
@@ -821,7 +842,11 @@ def _iso_between(
     sclip_iterations=10,
     sclip_nsigma=5,
     include_inner=False,
+    sclip_symmetric=False,
 ):
+
+    if np.ma.isMaskedArray(IMG):
+        IMG = np.ma.asarray(IMG, dtype=float).filled(np.nan)
 
     if not "m" in PARAMS:
         PARAMS["m"] = None
@@ -866,11 +891,9 @@ def _iso_between(
         )
     # Perform sigma clipping if requested
     if sigmaclip:
-        if np.any(CHOOSE):
-            sclim = Sigma_Clip_Upper(fluxes[CHOOSE], sclip_iterations, sclip_nsigma)
-            clipped_choose = np.logical_and(CHOOSE, fluxes < sclim)
-            if np.any(clipped_choose):
-                CHOOSE = clipped_choose
+        CHOOSE = _sigma_clip_samples(
+            fluxes, CHOOSE, sclip_iterations, sclip_nsigma, sclip_symmetric
+        )
     countmasked = np.sum(np.logical_not(CHOOSE))
     if np.sum(CHOOSE) < 5:
         logging.warning(
@@ -942,10 +965,13 @@ def _iso_extract(
     sclip_iterations=10,
     sclip_nsigma=5,
     return_choose=False,
+    sclip_symmetric=False,
 ):
     """
     Internal, basic function for extracting the pixel fluxes along an isophote
     """
+    if np.ma.isMaskedArray(IMG):
+        IMG = np.ma.asarray(IMG, dtype=float).filled(np.nan)
     if not "m" in PARAMS:
         PARAMS["m"] = None
     if not "C" in PARAMS:
@@ -1011,12 +1037,9 @@ def _iso_extract(
         CHOOSE = np.logical_and(CHOOSE, footprint_choose)
     # Perform sigma clipping if requested
     if sigmaclip:
-        if np.any(CHOOSE):
-            sclim = Sigma_Clip_Upper(flux[CHOOSE], sclip_iterations, sclip_nsigma)
-            clipped_choose = np.logical_and(CHOOSE, flux < sclim)
-            if np.any(clipped_choose):
-                CHOOSE = clipped_choose
-    # Dont clip pixels if that removes all of the pixels
+        CHOOSE = _sigma_clip_samples(
+            flux, CHOOSE, sclip_iterations, sclip_nsigma, sclip_symmetric
+        )
     countmasked = np.sum(np.logical_not(CHOOSE))
     all_masked = np.sum(CHOOSE) <= 0
     if all_masked:
@@ -1061,6 +1084,7 @@ def _iso_extract_with_interp_cutoff(
     sclip_iterations=10,
     sclip_nsigma=5,
     return_choose=False,
+    sclip_symmetric=False,
 ):
     """Extract one isophote using the legacy interpolation-to-nearest cutoff."""
     return _iso_extract(
@@ -1080,6 +1104,7 @@ def _iso_extract_with_interp_cutoff(
         sclip_iterations=sclip_iterations,
         sclip_nsigma=sclip_nsigma,
         return_choose=return_choose,
+        sclip_symmetric=sclip_symmetric,
     )
 
 
