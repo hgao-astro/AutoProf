@@ -184,7 +184,7 @@ def Mask_Segmentation_Map(IMG, results, options):
             if "background noise" in results
             else iqr(finite_values, rng=[16, 84]) / 2
         )
-        LSBImage(IMG - bkgrnd, noise, mask=mask)
+        LSBImage(IMG - bkgrnd, noise, mask=mask, faint_fraction=0.4)
         _plot_mask_overlay(mask, [[0, IMG.shape[1]], [0, IMG.shape[0]]])
         if options.get("ap_sampleendR") is not None:
             center = results.get(
@@ -314,6 +314,7 @@ def Star_Mask_IRAF(IMG, results, options):
             (IMG - results["background"])[ybounds[0] : ybounds[1], xbounds[0] : xbounds[1]],
             results["background noise"],
             mask=mask[ybounds[0] : ybounds[1], xbounds[0] : xbounds[1]],
+            faint_fraction=0.4,
         )
         _plot_mask_overlay(mask, [xbounds, ybounds])
         plt.savefig(
@@ -420,6 +421,7 @@ def Star_Mask(IMG, results, options):
             dat[ybounds[0] : ybounds[1], xbounds[0] : xbounds[1]],
             results["background noise"],
             mask=mask[ybounds[0] : ybounds[1], xbounds[0] : xbounds[1]],
+            faint_fraction=0.4,
         )
         _plot_mask_overlay(mask, [xbounds, ybounds])
         plt.tight_layout()

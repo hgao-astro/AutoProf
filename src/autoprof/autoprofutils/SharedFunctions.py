@@ -146,11 +146,12 @@ def _spline_fill_nonfinite(IMG, options=None, max_spline_points=50000):
         return _nearest_finite_fill(IMG, bad)
 
 
-def LSBImage(dat, noise, mask=None):
+def LSBImage(dat, noise, mask=None, faint_fraction=0.3):
     """Display background-subtracted data with a faint-linear/bright-log scale.
 
     Exclude masked pixels from the limits, but keep them visible in the image.
     Show invalid pixels in orange rather than as transparent background.
+    Use faint_fraction of the grayscale for the linear interval [-3, +3] RMS.
     """
     plt.figure(figsize=(6, 6))
     dat = np.ma.masked_invalid(dat)
@@ -173,14 +174,13 @@ def LSBImage(dat, noise, mask=None):
             vmax=np.max(finite_values),
         )
     else:
-        # Reserve 30% of the grayscale for [-3, +3] RMS and 70% for brighter light.
-        display = 0.3 * np.ma.clip((dat + 3 * noise) / (6 * noise), 0, 1)
+        display = faint_fraction * np.ma.clip((dat + 3 * noise) / (6 * noise), 0, 1)
         bright = np.ma.filled(dat > 3 * noise, False)
         if np.any(bright):
             ceiling = np.max(finite_values)
             if ceiling > 3 * noise:
                 scaled = (dat[bright] - 3 * noise) / (ceiling - 3 * noise)
-                display[bright] = 0.3 + 0.7 * LogStretch()(scaled)
+                display[bright] = faint_fraction + (1 - faint_fraction) * LogStretch()(scaled)
             else:
                 # All bright pixels are masked; saturate them without changing the faint scale.
                 display[bright] = 1

@@ -328,6 +328,7 @@ def _Plot_Isophotes(dat, R, parameters, results, options):
         results["background noise"],
         mask=results["mask"][ranges[1][0] : ranges[1][1], ranges[0][0] : ranges[0][1]]
         if results.get("mask") is not None else None,
+        faint_fraction=0.4,
     )
     _plot_mask_overlay(results.get("mask"), ranges)
     AddScale(plt.gca(), (ranges[0][1] - ranges[0][0]) * options["ap_pixscale"])
