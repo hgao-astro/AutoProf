@@ -11,6 +11,9 @@ from astropy.visualization import SqrtStretch, LogStretch
 import matplotlib.pyplot as plt
 from astropy.io import fits
 from astropy.stats import sigma_clip
+from astropy.coordinates import SkyCoord
+from astropy.wcs import WCS
+import astropy.units as u
 from itertools import compress
 import numpy as np
 from photutils.isophote import EllipseSample, EllipseGeometry, Isophote, IsophoteList
@@ -1526,11 +1529,79 @@ def _inv_x_to_eps(eps):
     return 0.5 + np.tan(np.pi * (eps - 0.5))  # 0.5 - np.log(0.96/(eps - 0.02) - 1.)
 
 
-def _read_forced_center(profile):
-    """Read center coordinates in the original image frame from a profile's aux file."""
+class _ForcedCenterError(ValueError):
+    """Profile center metadata cannot safely determine the target center."""
+
+
+def _image_celestial_wcs(options):
+    """Read the original science HDU's celestial WCS, if available."""
+    filename = options.get("ap_image_file")
+    if filename is None or not str(filename).lower().endswith(".fits"):
+        return None
+    with fits.open(filename) as hdul:
+        wcs = WCS(hdul[options.get("ap_hdulelement", 0)].header, hdul)
+        return wcs.celestial if wcs.has_celestial else None
+
+
+def _read_profile_center_metadata(profile):
+    """Read center comment fields without interpreting reference pixels as target pixels."""
+    metadata = {}
+    with open(profile) as stream:
+        for line in stream:
+            if not line.lstrip().startswith("#"):
+                continue
+            for field in line.lstrip()[1:].split(","):
+                if "=" not in field:
+                    continue
+                key, value = (part.strip() for part in field.split("=", 1))
+                if key in ("center_ra", "center_dec", "center_x", "center_y"):
+                    if key in metadata and metadata[key] != value:
+                        raise _ForcedCenterError("Conflicting %s profile comments" % key)
+                    metadata[key] = value
+    return metadata
+
+
+def _read_profile_sky_center(profile):
+    """Read ICRS degrees from profile comments; older profiles return None."""
+    fields = _read_profile_center_metadata(profile)
+    if "center_ra" not in fields and "center_dec" not in fields:
+        return None
+    try:
+        ra, dec = float(fields["center_ra"]), float(fields["center_dec"])
+        if not np.all(np.isfinite([ra, dec])) or not -90 <= dec <= 90:
+            raise ValueError("Invalid ICRS coordinates")
+        return SkyCoord(ra=ra * u.deg, dec=dec * u.deg, frame="icrs")
+    except (KeyError, ValueError) as exc:
+        raise _ForcedCenterError("Invalid center_ra/center_dec profile comment") from exc
+
+
+def _read_forced_center(profile, options=None):
+    """Return target-image pixels from ICRS metadata, falling back to legacy aux pixels."""
+    sky = _read_profile_sky_center(profile)
+    if sky is not None:
+        try:
+            wcs = _image_celestial_wcs(options or {})
+            if wcs is None:
+                raise ValueError("Target image has no celestial WCS")
+            x, y = wcs.world_to_pixel(sky)
+            if not np.all(np.isfinite([x, y])):
+                raise ValueError("Nonfinite target center")
+            return {"x": float(x), "y": float(y)}
+        except Exception as exc:
+            raise _ForcedCenterError("Cannot map the profile's ICRS center to the target image") from exc
+    fields = _read_profile_center_metadata(profile)
+    if "center_x" in fields or "center_y" in fields:
+        raise _ForcedCenterError(
+            "Profile has only reference-image pixel coordinates. Set ap_set_center in "
+            "target-image pixels after verifying alignment; these coordinates are not reused automatically."
+        )
     with open(profile[:-4] + "aux", "r") as stream:
         for line in stream:
             if line.startswith("center"):
+                logging.warning(
+                    "Using legacy aux-file pixel center; this assumes reference and target images "
+                    "share the same pixel grid. Set ap_set_center if they differ."
+                )
                 return {
                     "x": float(line[line.find("x:") + 3 : line.find("pix")]),
                     "y": float(line[line.find("y:") + 3 : line.rfind("pix")]),

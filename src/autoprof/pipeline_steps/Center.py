@@ -11,6 +11,7 @@ from ..autoprofutils.SharedFunctions import (
     Angle_Median,
     flux_to_sb,
     _read_forced_center,
+    _ForcedCenterError,
 )
 from photutils.centroids import centroid_2dg, centroid_com, centroid_1dg
 from astropy.visualization import SqrtStretch, LogStretch
@@ -37,10 +38,11 @@ def _center_mask(dat, results, extra_mask=None):
 def Center_Forced(IMG, results, options):
     """Extracts previously fit center coordinates.
 
-    Extracts the center coordinates from an aux file for a previous
-    AutoProf fit. Can instead simply be given a set center value, just
-    like other centering methods. A given center will override teh
-    fitted aux file center.
+    Uses the profile's ICRS center comment and the target image WCS, falling
+    back to legacy aux-file pixel coordinates when the comment is absent.
+    An explicit ap_set_center overrides the profile center.
+    Pixel-only profile comments require an explicit ap_set_center in the target
+    image; their coordinates are not automatically reused across images.
 
     Parameters
     -----------------
@@ -115,11 +117,13 @@ def Center_Forced(IMG, results, options):
         }
 
     try:
-        current_center = _read_forced_center(options["ap_forcing_profile"])
+        current_center = _read_forced_center(options["ap_forcing_profile"], options)
         if "_input_crop" in options:
             y0, _, x0, _ = options["_input_crop"]["bounds"]
             current_center = {"x": current_center["x"] - x0, "y": current_center["y"] - y0}
-    except:
+    except _ForcedCenterError:
+        raise
+    except (OSError, ValueError):
         logging.warning(
             "%s: Forced center failed! Using image center (or guess)."
             % options["ap_name"]

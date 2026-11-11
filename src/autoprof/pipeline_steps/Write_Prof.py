@@ -3,8 +3,9 @@ from astropy.table import Table
 import numpy as np
 import sys
 import os
+import logging
 
-from ..autoprofutils.SharedFunctions import PA_shift_convention
+from ..autoprofutils.SharedFunctions import PA_shift_convention, _image_celestial_wcs
 from datetime import datetime
 from time import sleep
 
@@ -29,6 +30,9 @@ def WriteProf(IMG, results, options):
     profile is written with comma (or a user specified delimiter)
     separation for each value, where each row corresponds to a given
     isophote at increasing semi-major axis values.
+
+    Center comments record zero-based center_x/center_y in the original input
+    image and, with a celestial WCS, center_ra/center_dec in ICRS degrees.
 
     The .aux file has a less strict format than the .prof file. The
     first line records the date and time that the file was written,
@@ -80,6 +84,31 @@ def WriteProf(IMG, results, options):
     saveto = options["ap_saveto"] if "ap_saveto" in options else "./"
 
     crop = options.get("_input_crop")
+    sky_center = None
+    pixel_center = None
+    if "center" in results:
+        x, y = results["center"]["x"], results["center"]["y"]
+        if crop is not None:
+            y0, _, x0, _ = crop["bounds"]
+            x, y = x + x0, y + y0
+        if np.all(np.isfinite([x, y])):
+            pixel_center = (x, y)
+        try:
+            wcs = _image_celestial_wcs(options)
+            if wcs is not None:
+                expected_shape = crop["shape"] if crop is not None else IMG.shape
+                if wcs.array_shape is not None and tuple(wcs.array_shape) != tuple(expected_shape):
+                    raise ValueError("Image shape no longer matches the original WCS")
+                if crop is not None:
+                    y0, y1, x0, x1 = crop["bounds"]
+                    if IMG.shape != (y1 - y0, x1 - x0):
+                        raise ValueError("Image shape no longer matches the automatic crop")
+                sky = wcs.pixel_to_world(x, y).icrs
+                if not np.all(np.isfinite([sky.ra.deg, sky.dec.deg])):
+                    raise ValueError("Nonfinite sky center")
+                sky_center = (sky.ra.deg, sky.dec.deg)
+        except Exception as exc:
+            logging.warning("Omitting profile sky center: %s", exc)
     aux_results = results.copy()
     if crop is not None:
         y0, y1, x0, x1 = crop["bounds"]
@@ -134,7 +163,13 @@ def WriteProf(IMG, results, options):
             format="ascii.commented_header",
             delimiter=delim,
             overwrite=True,
-            comment="# "
+            comment=(
+                "# center_ra=%.10f, center_dec=%.10f\n" % sky_center
+                if sky_center is not None else ""
+            ) + (
+                "# center_x=%.10f, center_y=%.10f\n" % pixel_center
+                if pixel_center is not None else ""
+            ) + "# "
             + delim.join(results["prof units"][h] for h in results["prof header"])
             + "\n",
         )

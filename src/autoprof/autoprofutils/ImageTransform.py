@@ -2,7 +2,7 @@ import numpy as np
 import sys
 import os
 
-from .SharedFunctions import _image_resample_bicubic, _interpolate_Lanczos, _read_forced_center
+from .SharedFunctions import _image_resample_bicubic, _interpolate_Lanczos, _read_forced_center, _ForcedCenterError
 
 __all__ = ("Crop", "Resolution")
 
@@ -19,7 +19,9 @@ def _prepare_image_crop(IMG, options):
         center = options["ap_set_center"]
     elif options.get("ap_forcing_profile") is not None:
         try:
-            center = _read_forced_center(options["ap_forcing_profile"])
+            center = _read_forced_center(options["ap_forcing_profile"], options)
+        except _ForcedCenterError:
+            raise
         except (OSError, ValueError):
             pass  # Center_Forced reports the missing center and uses the same fallback.
     x, y = center["x"], center["y"]
