@@ -1015,6 +1015,7 @@ the fitted range. Integer ``geometry_source`` codes are:
 - 2: held endpoint geometry at an extraction resampling radius.
 - 3: inactive fitting-grid radius, interpolated geometry.
 - 4: inactive fitting-grid radius, held endpoint geometry.
+- 5: central intensity measurement; geometry is undefined.
 
 These describe geometry provenance, not optimizer convergence. The default
 extraction limit includes the full candidate grid; an explicit
@@ -1029,10 +1030,16 @@ ap_sampleinitR (float, default None)
 
 **Description**
 
-Starting radius (in pixels) for isophote sampling from the
-image. Note that a starting radius of zero is not
-advised. Default is the first candidate radius when reusing the fitting grid;
-otherwise min(1 pixel, half the PSF FWHM).
+Starting radius (in pixels) for extraction. By default (or when zero), add
+an R=0 bilinear intensity measurement with NaN geometry and harmonic terms.
+A positive value excludes this central row. Positive radii begin at the first
+candidate radius when reusing the fitting grid; otherwise at
+min(1 pixel, half the PSF FWHM).
+
+The central intensity error propagates the supplied total RMS map, or background
+noise plus optional gain-based source noise. Masked/invalid interpolation support
+leaves the measurement unavailable. Enclosed flux at R=0 is zero (magnitude
+undefined); positive-radius measurements and their cumulative flux are unchanged.
 
 ap_samplelinearscale (float, default None)
 ----------------------------------------------------------------------

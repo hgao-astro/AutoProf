@@ -66,6 +66,9 @@ def EllipseModel(IMG, results, options):
     R = np.array(results["prof data"]["R"])[CHOOSE] / options["ap_pixscale"]
 
     sb = UnivariateSpline(R, np.array(results["prof data"]["SB"])[CHOOSE], ext=3, s=0)
+    # Central brightness can constrain the light profile, but has no geometry.
+    CHOOSE &= np.array(results["prof data"]["R"]) > 0
+    R = np.array(results["prof data"]["R"])[CHOOSE] / options["ap_pixscale"]
     pa = UnivariateSpline(
         R, np.array(results["prof data"]["pa"])[CHOOSE] * np.pi / 180, ext=3, s=0
     )

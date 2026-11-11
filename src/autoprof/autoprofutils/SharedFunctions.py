@@ -649,6 +649,44 @@ def _interpolate_bilinear(dat, X, Y, mask=None):
     return flux, valid
 
 
+def _central_intensity(dat, center, results, options, with_error=False):
+    """Return central intensity, its optional pixel-noise error, and validity.
+
+    ``dat`` is background-subtracted. Skip noise-map reads when only brightness
+    is needed, as in center diagnostics.
+    """
+    x, y = center["x"], center["y"]
+    flux, valid = _interpolate_bilinear(dat, [x], [y], mask=results.get("mask"))
+    error = np.nan
+    if with_error and valid[0]:
+        ix, iy = int(np.floor(x)), int(np.floor(y))
+        dx, dy = x - ix, y - iy
+        weights = np.outer([1 - dy, dy], [1 - dx, dx])
+        rms = options.get("ap_isofit_rms")
+        if rms is not None:
+            if isinstance(rms, str):
+                rms = Read_Image(rms, {})
+            rms = _crop_input_array(np.asarray(rms, dtype=float), options)
+            if rms.shape != dat.shape:
+                raise ValueError("ap_isofit_rms must have the same shape as the image.")
+            local_rms = rms[iy : iy + 2, ix : ix + 2]
+            variance = np.where(
+                np.isfinite(local_rms) & (local_rms > 0), local_rms**2, np.nan
+            )
+        else:
+            variance = np.full((2, 2), results["background noise"]**2, dtype=float)
+            gain = options.get("ap_isofit_gain")
+            if gain is not None:
+                gain = np.asarray(gain, dtype=float)
+                if gain.ndim != 0 or not np.isfinite(gain) or gain <= 0:
+                    raise ValueError("ap_isofit_gain must be a finite positive scalar.")
+                variance += np.maximum(dat[iy : iy + 2, ix : ix + 2], 0) / gain
+        used = weights > 0
+        error = np.sqrt(np.sum(weights[used]**2 * variance[used]))
+
+    return flux[0], error, bool(valid[0])
+
+
 def _validate_interpolate_method(method, option_name, allow_nearest=False):
     allowed = ("lanczos", "bicubic", "bilinear", "nearest")
     if not allow_nearest:

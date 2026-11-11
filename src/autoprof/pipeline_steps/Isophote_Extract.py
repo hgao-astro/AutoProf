@@ -27,6 +27,7 @@ from ..autoprofutils.SharedFunctions import (
     _resolve_isoextract_interp_method,
     _validate_interpolate_method,
     _photutils_masked_data,
+    _central_intensity,
     LSBImage,
     AddLogo,
     _average,
@@ -239,7 +240,54 @@ def _extract_isophote_line_samples(
     )
 
 
-def _Generate_Profile(IMG, results, R, parameters, options, forced_sampling_methods=None):
+def _central_profile_row(dat, results, options):
+    """Format the shared central measurement as a profile-table row."""
+    flux, error, valid = _central_intensity(
+        dat, results["center"], results, options, with_error=True
+    )
+
+    row = {
+        "R": 0.0,
+        "pixels": int(valid),
+        "maskedpixels": int(not valid),
+        "sampling_method": "bilinear",
+        "geometry_source": 5,
+    }
+    if options.get("ap_fluxunits", "mag") == "intensity":
+        row.update(
+            I=flux / options["ap_pixscale"]**2,
+            I_e=error / options["ap_pixscale"]**2,
+            totflux=0.0, totflux_e=0.0, totflux_direct=0.0,
+        )
+    else:
+        zeropoint = options.get("ap_zeropoint", 22.5)
+        row.update(
+            SB=flux_to_sb(flux, options["ap_pixscale"], zeropoint)
+            if flux > 0 else 99.999,
+            SB_e=2.5 * error / (flux * np.log(10))
+            if flux > 0 and np.isfinite(error) else 99.999,
+            totmag=99.999, totmag_e=99.999, totmag_direct=99.999,
+        )
+    return row
+
+
+def _Generate_Profile(
+    IMG, results, R, parameters, options, forced_sampling_methods=None, include_center=False
+):
+
+    # R=0 is a point measurement, never an input to band widths or geometry integration.
+    R = np.asarray(R)
+    positive = R > 0
+    if np.any(R == 0):
+        include_center = True
+        R = R[positive]
+        parameters = [p for p, keep in zip(parameters, positive) if keep]
+        if forced_sampling_methods is not None:
+            forced_sampling_methods = [
+                m for m, keep in zip(forced_sampling_methods, positive) if keep
+            ]
+    if len(R) == 0:
+        raise ValueError("Profile extraction requires at least one positive radius.")
 
     # Create image array with background and mask applied
     try:
@@ -625,15 +673,24 @@ def _Generate_Profile(IMG, results, R, parameters, options, forced_sampling_meth
         SBprof_units["C"] = "unitless"
         SBprof_data["C"] = list(p["C"] for p in parameters[:end_prof])
 
+    plot_parameters = parameters[:end_prof]
+    if include_center:
+        central = _central_profile_row(dat, results, options)
+        for column in params:
+            SBprof_data[column].insert(0, central.get(column, np.nan))
+        plot_parameters = [{"ellip": np.nan, "pa": np.nan, "m": None}] + plot_parameters
+
     if "ap_doplot" in options and options["ap_doplot"]:
-        Plot_Phase_Profile(np.array(SBprof_data["R"]), parameters[:end_prof], results, options)
+        Plot_Phase_Profile(
+            R[:end_prof] * options["ap_pixscale"], parameters[:end_prof], results, options
+        )
         if fluxunits == "intensity":
             Plot_I_Profile(
                 dat,
                 np.array(SBprof_data["R"]),
                 np.array(SBprof_data["I"]),
                 np.array(SBprof_data["I_e"]),
-                parameters[:end_prof],
+                plot_parameters,
                 results,
                 options,
             )
@@ -643,7 +700,7 @@ def _Generate_Profile(IMG, results, R, parameters, options, forced_sampling_meth
                 np.array(SBprof_data["R"]),
                 np.array(SBprof_data["SB"]),
                 np.array(SBprof_data["SB_e"]),
-                parameters[:end_prof],
+                plot_parameters,
                 results,
                 options,
             )
@@ -909,7 +966,8 @@ def Isophote_Extract(IMG, results, options):
     radii, the joint shape -ln(b/a) exp(2j PA) is interpolated linearly in
     log radius. Outside the fitted range, the nearest endpoint is held fixed.
     ``geometry_source`` codes are 0: fitted, 1: interpolated, 2: endpoint held,
-    3: inactive fit radius interpolated, 4: inactive fit radius endpoint held.
+    3: inactive fit radius interpolated, 4: inactive fit radius endpoint held,
+    5: central intensity with undefined geometry.
 
     Parameters
     -----------------
@@ -943,10 +1001,10 @@ def Isophote_Extract(IMG, results, options):
       are: 'linear', 'geometric', 'geometric-linear'
 
     ap_sampleinitR : float, default None
-      Starting radius (in pixels) for isophote sampling from the
-      image. Note that a starting radius of zero is not
-      advised. Default is the first candidate radius when reusing the fitting
-      grid; otherwise min(1 pixel, half the PSF FWHM).
+      Starting radius in pixels. Default (or zero) includes a central bilinear
+      intensity measurement with undefined geometry; positive radii start at
+      the first candidate radius, or min(1 pixel, half the PSF FWHM) on a new
+      grid. A positive value excludes the central measurement.
 
     ap_sampleendR : float, default None
       Maximum sampling radius in pixels, overriding *ap_extractfull* and
@@ -1095,14 +1153,16 @@ def Isophote_Extract(IMG, results, options):
     fit_R = np.asarray(results["fit R"])
     grid_R = np.asarray(results.get("fit R grid", fit_R))
     sample_scale = options.get("ap_samplegeometricscale", options.get("ap_scale", 0.2))
+    sample_start = options.get("ap_sampleinitR")
+    include_center = sample_start is None or sample_start == 0
     reuse_fit_grid = (
         options.get("ap_samplestyle", "geometric") == "geometric"
         and np.isclose(sample_scale, options.get("ap_scale", 0.2), rtol=1e-10, atol=0)
     )
-    if reuse_fit_grid and "ap_sampleinitR" in options:
-        start_index = np.argmin(np.abs(grid_R - options["ap_sampleinitR"]))
+    if reuse_fit_grid and not include_center:
+        start_index = np.argmin(np.abs(grid_R - sample_start))
         reuse_fit_grid = np.isclose(
-            grid_R[start_index], options["ap_sampleinitR"], rtol=1e-10, atol=0
+            grid_R[start_index], sample_start, rtol=1e-10, atol=0
         )
     else:
         start_index = 0
@@ -1110,8 +1170,8 @@ def Isophote_Extract(IMG, results, options):
     # Radius values to evaluate isophotes
     R = [
         grid_R[start_index] if reuse_fit_grid else (
-            options["ap_sampleinitR"]
-            if "ap_sampleinitR" in options
+            sample_start
+            if not include_center
             else min(1.0, results["psf fwhm"] / 2)
         )
     ]
@@ -1220,7 +1280,9 @@ def Isophote_Extract(IMG, results, options):
             for i in range(len(R)):
                 parameters[i][key] = errors[i]
 
-    return IMG, _Generate_Profile(IMG, results, R, parameters, options)
+    return IMG, _Generate_Profile(
+        IMG, results, R, parameters, options, include_center=include_center
+    )
 
 
 def Isophote_Extract_Photutils(IMG, results, options):

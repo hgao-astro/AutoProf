@@ -1726,9 +1726,13 @@ def Isophote_Fit_Forced(IMG, results, options):
                 float(row["R"])
             except ValueError:
                 continue  # Skip an uncommented units row.
+            if float(row["R"]) == 0:
+                continue  # A central intensity measurement has no fitted geometry.
             for h in force:
                 force[h].append(float(row[h]))
 
+    if not force["R"]:
+        raise ValueError("The forcing profile contains no positive-radius geometry.")
     force["pa"] = PA_shift_convention(np.array(force["pa"]), deg=True)
 
     if "ap_doplot" in options and options["ap_doplot"]:

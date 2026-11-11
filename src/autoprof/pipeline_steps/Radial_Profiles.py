@@ -165,6 +165,12 @@ def Radial_Profiles(IMG, results, options):
     avgmedflux = np.inf
 
     for i in range(len(R)):
+        if R[i] == 0:
+            # Directional wedges are undefined at a point.
+            for sa_i in range(len(wedgeangles)):
+                sb[sa_i].append(99.999)
+                sbE[sa_i].append(99.999)
+            continue
         isobandwidth = R[i] * (
             options["ap_isoband_width"] if "ap_isoband_width" in options else 0.025
         )

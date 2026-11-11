@@ -128,6 +128,8 @@ def Check_Fit(IMG, results, options):
         }
 
     for i in range(len(checkson["R"])):
+        if checkson["R"][i] == 0:
+            continue
         init_isovals = _iso_extract_with_interp_cutoff(
             dat,
             checkson["R"][i],

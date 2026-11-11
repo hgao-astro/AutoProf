@@ -4,6 +4,7 @@ import os
 
 from ..autoprofutils.SharedFunctions import (
     _iso_extract,
+    _central_intensity,
     _has_enough_isophote_coverage,
     _interpolate_invalid_isophote_samples,
     AddLogo,
@@ -734,18 +735,11 @@ def Center_Peak(IMG, results, options):
 
 
 def _central_surface_brightness(dat, center, results, options):
-    isovals = _iso_extract(
-        dat,
-        0.0,
-        {"ellip": 0.0, "pa": 0.0},
-        center,
-        mask=results.get("mask", None),
-        interp_method="bilinear",
-    )
-    if len(isovals) == 0:
+    intensity, _, valid = _central_intensity(dat, center, results, options)
+    if not valid:
         return np.nan
     return flux_to_sb(
-        isovals[0],
+        intensity,
         options["ap_pixscale"],
         options["ap_zeropoint"] if "ap_zeropoint" in options else 22.5,
     )
