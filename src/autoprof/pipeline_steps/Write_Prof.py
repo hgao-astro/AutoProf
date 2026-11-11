@@ -33,6 +33,8 @@ def WriteProf(IMG, results, options):
 
     Center comments record zero-based center_x/center_y in the original input
     image and, with a celestial WCS, center_ra/center_dec in ICRS degrees.
+    Measurement comments record background, background_rms, pixscale, zeropoint,
+    psf_fwhm, init_radius and fit_limit when available, with their units.
 
     The .aux file has a less strict format than the .prof file. The
     first line records the date and time that the file was written,
@@ -158,6 +160,34 @@ def WriteProf(IMG, results, options):
             overwrite=True,
         )
     else:
+        pixscale = options.get("ap_pixscale")
+        background = results.get("background")
+        background = (
+            background / pixscale**2
+            if background is not None and np.ndim(background) == 0
+            and pixscale is not None and pixscale > 0
+            else None
+        )
+        # Forced geometry is not a new initialization or fit of this image.
+        forced = options.get("ap_forcing_profile") is not None
+        fit_radii = results.get("fit R", [])
+        measurements = [
+            ("background", background, "flux/arcsec^2"),
+            ("background_rms", results.get("background noise"), "flux/pix"),
+            ("pixscale", pixscale, "arcsec/pix"),
+            ("zeropoint", options.get("ap_zeropoint", 22.5), "mag"),
+            ("psf_fwhm", results.get("psf fwhm"), "pix"),
+            ("init_radius", None if forced else results.get("init R"), "pix"),
+            ("fit_limit", fit_radii[-1] if not forced and len(fit_radii) else None, "pix"),
+        ]
+        measurements = [
+            (key, value, unit) for key, value, unit in measurements
+            if value is not None and np.ndim(value) == 0 and np.isfinite(value)
+        ]
+        metadata_comments = "".join(
+            "# %s=%.12g, unit=%s\n" % (key, value, unit)
+            for key, value, unit in measurements
+        )
         T.write(
             os.path.join(saveto, options["ap_name"] + ".prof"),
             format="ascii.commented_header",
@@ -169,7 +199,7 @@ def WriteProf(IMG, results, options):
             ) + (
                 "# center_x=%.10f, center_y=%.10f\n" % pixel_center
                 if pixel_center is not None else ""
-            ) + "# "
+            ) + metadata_comments + "# "
             + delim.join(results["prof units"][h] for h in results["prof header"])
             + "\n",
         )
