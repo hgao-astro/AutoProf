@@ -175,6 +175,12 @@ ap_fluxunits (str, default "mag")
 units for outputted photometry. Can either be "mag" for log
 units, or "intensity" for linear units.
 
+Native free and forced extraction integrate the light profile to obtain
+``totflux`` or ``totmag``. Their errors propagate intensity errors only,
+holding geometry fixed and neglecting correlations between radii.
+``Nsamples`` counts retained samples; ``rejected_samples`` counts masked, invalid
+and clipped samples. Line counts refer to sampled positions; band counts to pixels.
+
 ap_forced_use_sampling_method (bool, default True)
 ----------------------------------------------------------------------
 
@@ -1008,6 +1014,7 @@ the fitted range. Integer ``geometry_source`` codes are:
 - 4: inactive fitting-grid radius, held endpoint geometry.
 - 5: central intensity measurement; geometry is undefined.
 
+Endpoint-held geometry (codes 2 and 4) has NaN ellipticity and PA errors.
 These describe geometry provenance, not optimizer convergence. The default
 extraction limit includes the full candidate grid; an explicit
 ``ap_sampleendR`` still takes precedence.

@@ -1,8 +1,6 @@
 from photutils.detection import IRAFStarFinder
 import numpy as np
 import matplotlib.pyplot as plt
-from astropy.visualization import SqrtStretch, LogStretch
-from astropy.visualization.mpl_normalize import ImageNormalize
 from scipy.stats import mode, iqr
 import logging
 import sys
@@ -16,6 +14,7 @@ from ..autoprofutils.SharedFunctions import (
     _nearest_finite_fill,
     _crop_input_array,
 )
+from ..autoprofutils.Diagnostic_Plots import _plot_mask_overlay
 
 __all__ = ("Bad_Pixel_Mask", "Mask_Segmentation_Map", "Star_Mask_IRAF", "Star_Mask")
 
@@ -186,10 +185,7 @@ def Mask_Segmentation_Map(IMG, results, options):
             else iqr(finite_values, rng=[16, 84]) / 2
         )
         LSBImage(IMG - bkgrnd, noise, mask=mask)
-        showmask = np.copy(mask)
-        showmask[showmask > 1] = 1
-        showmask[showmask < 1] = np.nan
-        plt.imshow(showmask, origin="lower", cmap="Reds_r", alpha=0.5)
+        _plot_mask_overlay(mask, [[0, IMG.shape[1]], [0, IMG.shape[0]]])
         if options.get("ap_sampleendR") is not None:
             center = results.get(
                 "center", options.get(
@@ -314,19 +310,12 @@ def Star_Mask_IRAF(IMG, results, options):
 
     # Plot star mask for diagnostic purposes
     if "ap_doplot" in options and options["ap_doplot"]:
-        plt.imshow(
-            np.clip(
-                dat[ybounds[0] : ybounds[1], xbounds[0] : xbounds[1]],
-                a_min=0,
-                a_max=None,
-            ),
-            origin="lower",
-            cmap="Greys_r",
-            norm=ImageNormalize(stretch=LogStretch()),
+        LSBImage(
+            (IMG - results["background"])[ybounds[0] : ybounds[1], xbounds[0] : xbounds[1]],
+            results["background noise"],
+            mask=mask[ybounds[0] : ybounds[1], xbounds[0] : xbounds[1]],
         )
-        dat = mask.astype(float)[ybounds[0] : ybounds[1], xbounds[0] : xbounds[1]]
-        dat[dat == 0] = np.nan
-        plt.imshow(dat, origin="lower", cmap="Reds_r", alpha=0.7)
+        _plot_mask_overlay(mask, [xbounds, ybounds])
         plt.savefig(
             f"{options.get('ap_plotpath','')}mask_{options['ap_name']}.{options.get('ap_plot_extension', 'jpg')}",
             dpi=options["ap_plotdpi"] if "ap_plotdpi" in options else 300,
@@ -432,9 +421,7 @@ def Star_Mask(IMG, results, options):
             results["background noise"],
             mask=mask[ybounds[0] : ybounds[1], xbounds[0] : xbounds[1]],
         )
-        dat = mask.astype(float)[ybounds[0] : ybounds[1], xbounds[0] : xbounds[1]]
-        dat[dat == 0] = np.nan
-        plt.imshow(dat, origin="lower", cmap="Reds_r", alpha=0.7)
+        _plot_mask_overlay(mask, [xbounds, ybounds])
         plt.tight_layout()
         plt.savefig(
             f"{options.get('ap_plotpath','')}mask_{options['ap_name']}.{options.get('ap_plot_extension', 'jpg')}",

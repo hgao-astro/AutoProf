@@ -37,7 +37,6 @@ from ..autoprofutils.SharedFunctions import (
     flux_to_mag,
     PA_shift_convention,
     autocolours,
-    fluxdens_to_fluxsum_errorprop,
     Fmode_fluxdens_to_fluxsum_errorprop,
     mag_to_flux,
 )
@@ -249,8 +248,8 @@ def _central_profile_row(dat, results, options):
 
     row = {
         "R": 0.0,
-        "pixels": int(valid),
-        "maskedpixels": int(not valid),
+        "Nsamples": int(valid),
+        "rejected_samples": int(not valid),
         "sampling_method": "bilinear",
         "geometry_source": 5,
     }
@@ -258,7 +257,7 @@ def _central_profile_row(dat, results, options):
         row.update(
             I=flux / options["ap_pixscale"]**2,
             I_e=error / options["ap_pixscale"]**2,
-            totflux=0.0, totflux_e=0.0, totflux_direct=0.0,
+            totflux=0.0, totflux_e=0.0,
         )
     else:
         zeropoint = options.get("ap_zeropoint", 22.5)
@@ -267,7 +266,7 @@ def _central_profile_row(dat, results, options):
             if flux > 0 else 99.999,
             SB_e=2.5 * error / (flux * np.log(10))
             if flux > 0 and np.isfinite(error) else 99.999,
-            totmag=99.999, totmag_e=99.999, totmag_direct=99.999,
+            totmag=99.999, totmag_e=99.999,
         )
     return row
 
@@ -317,9 +316,8 @@ def _Generate_Profile(
 
     sb = []
     sbE = []
-    pixels = []
-    maskedpixels = []
-    cogdirect = []
+    retained_samples = []
+    rejected_samples = []
     # Internal bookkeeping for one-sample uncertainty repair; labels are also
     # written to the profile table when requested.
     medfluxes = []
@@ -442,23 +440,16 @@ def _Generate_Profile(
                 coef_isovals[0], coef_isovals[1], options["ap_iso_measurecoefs"]
             )
         if len(isovals[0]) == 0:
-            pixels.append(0)
-            maskedpixels.append(isovals[2])
+            retained_samples.append(0)
+            rejected_samples.append(isovals[2])
             medfluxes.append(np.nan)
             scatfluxes.append(np.nan)
             sample_labels.append(sampling_method)
-            if fluxunits == "intensity":
-                sb.append(np.nan)
-                sbE.append(np.nan)
-                cogdirect.append(np.nan)
-            else:
-                sb.append(np.nan)
-                sbE.append(np.nan)
-                cogdirect.append(np.nan)
+            sb.append(np.nan)
+            sbE.append(np.nan)
             if measure_coefs:
                 measFmodes.append(coef_measurements)
             continue
-        isotot = np.sum(_iso_between(dat, 0, R[i], parameters[i], results["center"], mask=mask))
         medflux = _average(
             isovals[0],
             options["ap_isoaverage_method"] if "ap_isoaverage_method" in options else "median",
@@ -470,15 +461,14 @@ def _Generate_Profile(
         if measure_coefs:
             measFmodes.append(coef_measurements)
 
-        pixels.append(len(isovals[0]))
-        maskedpixels.append(isovals[2])
+        retained_samples.append(len(isovals[0]))
+        rejected_samples.append(isovals[2])
         medfluxes.append(medflux)
         scatfluxes.append(scatflux)
         sample_labels.append(sampling_method)
         if fluxunits == "intensity":
             sb.append(medflux / options["ap_pixscale"] ** 2)
             sbE.append(scatflux / (np.sqrt(len(isovals[0])) * options["ap_pixscale"] ** 2))
-            cogdirect.append(isotot)
         else:
             sb.append(
                 flux_to_sb(medflux, options["ap_pixscale"], zeropoint)
@@ -490,7 +480,6 @@ def _Generate_Profile(
                 if medflux > 0
                 else np.nan
             )
-            cogdirect.append(flux_to_mag(isotot, zeropoint) if isotot > 0 else np.nan)
         if medflux <= 0:
             count_neg += 1
         if (
@@ -507,11 +496,11 @@ def _Generate_Profile(
         _estimate_sparse_scatflux(
             medfluxes[:end_prof],
             scatfluxes[:end_prof],
-            pixels[:end_prof],
+            retained_samples[:end_prof],
             sample_labels[:end_prof],
         )
     )
-    for i in np.flatnonzero(np.asarray(pixels[:end_prof]) == 1):
+    for i in np.flatnonzero(np.asarray(retained_samples[:end_prof]) == 1):
         if fluxunits == "intensity":
             sbE[i] = scatfluxes[i] / options["ap_pixscale"] ** 2
         elif medfluxes[i] > 0:
@@ -556,9 +545,8 @@ def _Generate_Profile(
             "ellip_e",
             "pa",
             "pa_e",
-            "pixels",
-            "maskedpixels",
-            "totflux_direct",
+            "Nsamples",
+            "rejected_samples",
         ]
 
         SBprof_units = {
@@ -571,9 +559,8 @@ def _Generate_Profile(
             "ellip_e": "unitless",
             "pa": "deg",
             "pa_e": "deg",
-            "pixels": "count",
-            "maskedpixels": "count",
-            "totflux_direct": "flux",
+            "Nsamples": "count",
+            "rejected_samples": "count",
         }
     else:
         params = [
@@ -586,9 +573,8 @@ def _Generate_Profile(
             "ellip_e",
             "pa",
             "pa_e",
-            "pixels",
-            "maskedpixels",
-            "totmag_direct",
+            "Nsamples",
+            "rejected_samples",
         ]
 
         SBprof_units = {
@@ -601,9 +587,8 @@ def _Generate_Profile(
             "ellip_e": "unitless",
             "pa": "deg",
             "pa_e": "deg",
-            "pixels": "count",
-            "maskedpixels": "count",
-            "totmag_direct": "mag",
+            "Nsamples": "count",
+            "rejected_samples": "count",
         }
 
     # Sentinels are an output convention and must not enter profile calculations.
@@ -618,14 +603,12 @@ def _Generate_Profile(
         sbE = np.asarray(sbE)
         cog = np.asarray(cog)
         cogE = np.asarray(cogE)
-        cogdirect = np.asarray(cogdirect)
         invalid_sb = np.logical_not(np.isfinite(sb))
         sb[invalid_sb] = 99.999
         sbE[np.logical_or(invalid_sb, np.logical_not(np.isfinite(sbE)))] = 99.999
         invalid_cog = np.logical_or(np.logical_not(np.isfinite(cog)), cog > 99)
         cog[invalid_cog] = 99.999
         cogE[np.logical_or(invalid_cog, np.logical_not(np.isfinite(cogE)))] = 99.999
-        cogdirect[np.logical_not(np.isfinite(cogdirect))] = 99.999
 
     SBprof_data = dict((h, None) for h in params)
     SBprof_data["R"] = list(R[:end_prof] * options["ap_pixscale"])
@@ -637,9 +620,8 @@ def _Generate_Profile(
     SBprof_data["ellip_e"] = list(parameters[p]["ellip err"] for p in range(end_prof))
     SBprof_data["pa"] = list(parameters[p]["pa"] * 180 / np.pi for p in range(end_prof))
     SBprof_data["pa_e"] = list(parameters[p]["pa err"] * 180 / np.pi for p in range(end_prof))
-    SBprof_data["pixels"] = list(pixels)
-    SBprof_data["maskedpixels"] = list(maskedpixels)
-    SBprof_data["totflux_direct" if fluxunits == "intensity" else "totmag_direct"] = list(cogdirect)
+    SBprof_data["Nsamples"] = list(retained_samples)
+    SBprof_data["rejected_samples"] = list(rejected_samples)
     if output_sampling_method:
         params.append("sampling_method")
         SBprof_units["sampling_method"] = "none"
@@ -957,7 +939,8 @@ def Isophote_Extract(IMG, results, options):
     unless an explicit starting radius selects a different grid, then extend outward.
     Fitted geometry is copied at matching radii. Between fitted
     radii, the joint shape -ln(b/a) exp(2j PA) is interpolated linearly in
-    log radius. Outside the fitted range, the nearest endpoint is held fixed.
+    log radius. Outside the fitted range, the nearest endpoint is held fixed
+    and its geometry uncertainties are reported as NaN.
     ``geometry_source`` codes are 0: fitted, 1: interpolated, 2: endpoint held,
     3: inactive fit radius interpolated, 4: inactive fit radius endpoint held,
     5: central intensity with undefined geometry.
@@ -1269,6 +1252,11 @@ def Isophote_Extract(IMG, results, options):
                 )
             for i in range(len(R)):
                 parameters[i][key] = errors[i]
+
+    for p in parameters:
+        if p["geometry source"] in (2, 4):
+            p["ellip err"] = np.nan
+            p["pa err"] = np.nan
 
     return IMG, _Generate_Profile(
         IMG, results, R, parameters, options, include_center=include_center

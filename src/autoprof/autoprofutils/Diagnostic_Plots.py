@@ -111,12 +111,14 @@ def _plot_mask_overlay(mask, ranges):
     if mask is None:
         return
     mask = mask[ranges[1][0] : ranges[1][1], ranges[0][0] : ranges[0][1]]
+    # Preserve the distinct invalid-pixel color in the underlying image.
+    mask = np.logical_and(mask, ~np.ma.getmaskarray(plt.gca().images[0].get_array()))
     if np.any(mask):
         plt.imshow(
             np.ma.masked_equal(mask, 0),
             origin="lower",
             cmap=matplotlib.colors.ListedColormap(["#0072FF"]),
-            alpha=0.6,
+            alpha=0.35,
             interpolation="none",
             zorder=1,
         )

@@ -150,40 +150,44 @@ def LSBImage(dat, noise, mask=None):
     """Display background-subtracted data with a faint-linear/bright-log scale.
 
     Exclude masked pixels from the limits, but keep them visible in the image.
+    Show invalid pixels in orange rather than as transparent background.
     """
     plt.figure(figsize=(6, 6))
     dat = np.ma.masked_invalid(dat)
+    cmap = plt.get_cmap("Greys_r").copy()
+    cmap.set_bad("#E69F00")
     finite_values = (dat if mask is None else np.ma.masked_where(mask, dat)).compressed()
     if finite_values.size == 0 and mask is not None:
         finite_values = dat.compressed()
         if finite_values.size:
             logging.warning("No unmasked pixels for LSB display limits; using finite pixels")
     if finite_values.size == 0:
-        logging.warning("Skipping LSB image display; no finite pixels")
+        logging.warning("No finite pixels for LSB image display")
+        plt.imshow(dat, origin="lower", cmap=cmap, vmin=0, vmax=1, interpolation="none")
     elif not np.isfinite(noise) or noise <= 0:
         plt.imshow(
             dat,
             origin="lower",
-            cmap="Greys_r",
+            cmap=cmap,
             vmin=np.min(finite_values),
             vmax=np.max(finite_values),
         )
     else:
-        # Reserve half the grayscale for [-3, +3] RMS and half for brighter light.
-        display = 0.5 * np.ma.clip((dat + 3 * noise) / (6 * noise), 0, 1)
+        # Reserve 30% of the grayscale for [-3, +3] RMS and 70% for brighter light.
+        display = 0.3 * np.ma.clip((dat + 3 * noise) / (6 * noise), 0, 1)
         bright = np.ma.filled(dat > 3 * noise, False)
         if np.any(bright):
             ceiling = np.max(finite_values)
             if ceiling > 3 * noise:
                 scaled = (dat[bright] - 3 * noise) / (ceiling - 3 * noise)
-                display[bright] = 0.5 + 0.5 * LogStretch()(scaled)
+                display[bright] = 0.3 + 0.7 * LogStretch()(scaled)
             else:
                 # All bright pixels are masked; saturate them without changing the faint scale.
                 display[bright] = 1
         plt.imshow(
             display,
             origin="lower",
-            cmap="Greys_r",
+            cmap=cmap,
             vmin=0,
             vmax=1,
             interpolation="none",
@@ -1732,9 +1736,6 @@ def fluxdens_to_fluxsum_errorprop(
     I: flux density (flux/arcsec^2)
     axisratio: b/a profile
     """
-    if axisratioE is None:
-        axisratioE = np.zeros(len(R))
-
     # Create container for the monte-carlo iterations
     sum_results = np.zeros((N, len(R))) - 99.999
     I_CHOOSE = np.logical_and(np.isfinite(I), I > 0)
@@ -1744,8 +1745,8 @@ def fluxdens_to_fluxsum_errorprop(
     for i in range(1, N):
         # Randomly sampled SB profile
         tempI = np.random.normal(loc=I, scale=np.abs(IE))
-        # Randomly sampled axis ratio profile
-        tempq = np.clip(
+        # Hold geometry fixed unless axis-ratio errors are explicitly requested.
+        tempq = axisratio if axisratioE is None else np.clip(
             np.random.normal(loc=axisratio, scale=np.abs(axisratioE)),
             a_min=1e-3,
             a_max=1 - 1e-3,
@@ -1837,6 +1838,7 @@ def Fmode_fluxdens_to_fluxsum(R, I, parameters, A=None):
 def Fmode_fluxdens_to_fluxsum_errorprop(R, I, IE, parameters, N=100, symmetric_error=True):
     """
     Integrate a flux density profile, with isophotes including Fourier perturbations.
+    Propagate intensity errors only, holding all geometry fixed.
 
     Arguments
     ---------
@@ -1862,16 +1864,12 @@ def Fmode_fluxdens_to_fluxsum_errorprop(R, I, IE, parameters, N=100, symmetric_e
       entries for each radius.
     """
 
-    for i in range(len(R)):
-        if not "ellip err" in parameters[i]:
-            parameters[i]["ellip err"] = np.zeros(len(R))
     if all(parameters[p]["m"] is None for p in range(len(parameters))):
         return fluxdens_to_fluxsum_errorprop(
             R,
             I,
             IE,
             1.0 - np.array(list(parameters[p]["ellip"] for p in range(len(parameters)))),
-            np.array(list(parameters[p]["ellip err"] for p in range(len(parameters)))),
             N=N,
             symmetric_error=symmetric_error,
         )
@@ -1889,20 +1887,9 @@ def Fmode_fluxdens_to_fluxsum_errorprop(R, I, IE, parameters, N=100, symmetric_e
     for i in range(1, N):
         # Randomly sampled SB profile
         tempI = np.random.normal(loc=I, scale=np.abs(IE))
-        # Randomly sampled axis ratio profile
-        temp_parameters = deepcopy(cut_parameters)
-        for p in range(len(cut_parameters)):
-            temp_parameters[p]["ellip"] = np.clip(
-                np.random.normal(
-                    loc=cut_parameters[p]["ellip"],
-                    scale=np.abs(cut_parameters[p]["ellip err"]),
-                ),
-                a_min=1e-3,
-                a_max=1 - 1e-3,
-            )
         # Compute COG with sampled data
         sum_results[i][I_CHOOSE] = Fmode_fluxdens_to_fluxsum(
-            R[I_CHOOSE], tempI[I_CHOOSE], temp_parameters, A
+            R[I_CHOOSE], tempI[I_CHOOSE], cut_parameters, A
         )
 
     # Condense monte-carlo evaluations into profile and uncertainty envelope
@@ -1965,54 +1952,12 @@ def SBprof_to_COG(R, SB, parameters):
 
 
 def SBprof_to_COG_errorprop(R, SB, SBE, parameters, N=100, symmetric_error=True):
+    """Integrate surface brightness and propagate its errors with fixed geometry.
+
+    R is in arcsec; SB and SBE are in mag/arcsec^2. Parameters specify the
+    adopted isophote shapes. Return cumulative magnitudes and errors from N
+    intensity realizations, excluding geometry uncertainty.
     """
-    Converts a surface brightness profile to a curve of growth by integrating
-    the SB profile in flux units then converting back to mag units. Two methods
-    are implemented, one using the trapezoid method and one assuming constant
-    SB between isophotes. Trapezoid method is in principle more accurate, but
-    may become unstable with erratic data. An uncertainty profile is also
-    computed, from a given SB uncertainty profile and optional axisratio
-    uncertainty profile.
-
-    R: Radius in arcsec
-    SB: surface brightness in mag arcsec^-2
-    SBE: surface brightness uncertainty relative mag arcsec^-2
-    axisratio: b/a indicating degree of isophote ellipticity
-    axisratioE: uncertainty in b/a
-    N: number of iterations for computing uncertainty
-    method: 0 for trapezoid, 1 for constant
-
-    returns: magnitude and uncertainty profile in mag
-    """
-
-    # # If not provided, axis ratio error is assumed to be zero
-    # if axisratioE is None:
-    #     axisratioE = np.zeros(len(R))
-
-    # # Create container for the monte-carlo iterations
-    # COG_results = np.zeros((N, len(R))) + 99.999
-    # SB_CHOOSE = np.logical_and(np.isfinite(SB), SB < 99)
-    # if np.sum(SB_CHOOSE) < 5:
-    #     return (None, None) if symmetric_error else (None, None, None)
-    # COG_results[0][SB_CHOOSE] = SBprof_to_COG(R[SB_CHOOSE], SB[SB_CHOOSE], axisratio[SB_CHOOSE], method = method)
-    # for i in range(1,N):
-    #     # Randomly sampled SB profile
-    #     tempSB = np.random.normal(loc = SB, scale = np.abs(SBE))
-    #     # Randomly sampled axis ratio profile
-    #     tempq = np.random.normal(loc = axisratio, scale = np.abs(axisratioE))
-    #     # Compute COG with sampled data
-    #     COG_results[i][SB_CHOOSE] = SBprof_to_COG(R[SB_CHOOSE], tempSB[SB_CHOOSE], tempq[SB_CHOOSE], method = method)
-
-    # # Condense monte-carlo evaluations into profile and uncertainty envelope
-    # COG_profile = COG_results[0]
-    # COG_lower = COG_profile - np.quantile(COG_results, 0.317310507863/2, axis = 0)
-    # COG_upper = np.quantile(COG_results, 1. - 0.317310507863/2, axis = 0) - COG_profile
-
-    # # Return requested uncertainty format
-    # if symmetric_error:
-    #     return COG_profile, np.abs(COG_lower + COG_upper)/2
-    # else:
-    #     return COG_profile, COG_lower, COG_upper
     I, Ie = mag_to_flux(SB, 20.0, SBE)
     res = Fmode_fluxdens_to_fluxsum_errorprop(
         R, I, Ie, parameters, N=N, symmetric_error=symmetric_error
