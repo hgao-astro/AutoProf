@@ -1031,9 +1031,9 @@ ap_sampleinitR (float, default None)
 Starting radius (in pixels) for extraction. By default (or when zero), add
 an R=0 bilinear intensity measurement with NaN geometry and harmonic terms.
 A positive value sets the starting radius and excludes this central row.
-By default, extend a reused fitting grid inward with geometric spacing to
-0.5 pixel, independent of PSF FWHM, holding the innermost fitted geometry.
-Existing grid radii are retained; new grids start at this minimum.
+Extend a reused fitting grid inward at the same geometric step while radii
+exceed 0.5 pixel, holding the innermost fitted geometry. Existing grid radii
+are retained; new grids start at 0.5 pixel.
 
 The central intensity error propagates the supplied total RMS map, or background
 noise plus optional gain-based source noise. Masked/invalid interpolation support

@@ -979,8 +979,8 @@ def Isophote_Extract(IMG, results, options):
     ap_sampleinitR : float, default None
       Starting radius in pixels. Default (or zero) includes a central bilinear
       intensity measurement with undefined geometry. Extend a reused fitting
-      grid inward geometrically to 0.5 pixel, independent of PSF FWHM, holding
-      the innermost fitted geometry. New grids start at that minimum.
+      grid inward at the same geometric step while radii exceed 0.5 pixel,
+      holding the innermost fitted geometry. New grids start at 0.5 pixel.
       A positive value sets the starting radius and excludes the central row.
 
     ap_sampleendR : float, default None
@@ -1145,9 +1145,9 @@ def Isophote_Extract(IMG, results, options):
         )
     ]
     if reuse_fit_grid and include_center and inner_radius < R[0]:
-        # Adjust only the inner spacing to meet both endpoints without a tiny final gap.
-        inner_steps = int(np.ceil(np.log(R[0] / inner_radius) / np.log1p(sample_scale)))
-        R = list(np.geomspace(inner_radius, R[0], inner_steps + 1))
+        while R[-1] / (1.0 + sample_scale) > inner_radius:
+            R.append(R[-1] / (1.0 + sample_scale))
+        R.reverse()
     sample_end = options.get("ap_sampleendR")
     endR = sample_end if sample_end is not None else (
         np.inf if options.get("ap_extractfull", False) else max(grid_R[-1], 3 * fit_R[-1])
